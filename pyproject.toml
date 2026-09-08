@@ -1,0 +1,16 @@
+[project]
+name = "dic"
+version = "0.1.0"
+description = "a minimalist CLI for chat LLMs"
+requires-python = ">=3.8"
+dependencies = ["PyYAML"]
+
+[project.scripts]
+dic = "dic:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["dic"]
