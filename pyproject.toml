@@ -6,7 +6,7 @@ requires-python = ">=3.8"
 dependencies = ["PyYAML"]
 
 [project.scripts]
-dic = "dic:main"
+dic = "dic.dic:main"
 
 [build-system]
 requires = ["setuptools>=61"]
