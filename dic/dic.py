@@ -25,6 +25,10 @@ MODELS_PATH = os.path.join(CONFIG_DIR, "models.yaml")
 DEFAULTS_PATH = os.path.join(HERE, "models.yaml")
 ADAPTER_DIR = os.path.join(CONFIG_DIR, "adapters")
 
+BLUE = "\033[38;5;39m"       # model output, when stdout is a terminal
+ORANGE = "\033[38;5;208m"    # the cost summary, when stderr is a terminal
+RESET = "\033[0m"
+
 
 def load_models():
     """Every configured model, highest priority first.
@@ -134,6 +138,20 @@ def extract(text):
     return m.group(1) if m else text
 
 
+def summary(model, tin, tout, mid):
+    """The one-line cost and mid report written to stderr.
+
+    Costs are per million tokens, as configured; a model with no configured
+    price simply reports zero.
+
+    >>> summary({"cost_input": 3.0, "cost_output": 15.0}, 1000, 500, "01ABC")
+    'cost: $0.0105 (input: $0.0030, output: $0.0075) --mid=01ABC'
+    """
+    ci = (model.get("cost_input") or 0) * (tin or 0) / 1e6
+    co = (model.get("cost_output") or 0) * (tout or 0) / 1e6
+    return "cost: $%.4f (input: $%.4f, output: $%.4f) --mid=%s" % (ci + co, ci, co, mid)
+
+
 def main():
     p = argparse.ArgumentParser(prog="dic", description="talk to a chat model")
     p.add_argument("prompt", nargs="*")
@@ -181,17 +199,24 @@ def main():
     headers.update(ad.auth(key))
     headers.update(model.get("headers") or {})
 
-    acc, out = {}, []
+    tty_out, tty_err = sys.stdout.isatty(), sys.stderr.isatty()
+    acc, out, colored = {}, [], False
     for event in sse(model["api_base"], ad.PATH, headers, body):
         text = ad.parse(event, acc)
         if text:
             out.append(text)
             if not args.extract:
+                if tty_out and not colored:
+                    sys.stdout.write(BLUE)
+                    colored = True
                 sys.stdout.write(text)
                 sys.stdout.flush()
     response = "".join(out)
-    if not args.extract and response and not response.endswith("\n"):
-        sys.stdout.write("\n")
+    if not args.extract:
+        if colored:
+            sys.stdout.write(RESET)
+        if response and not response.endswith("\n"):
+            sys.stdout.write("\n")
 
     tin, tout = acc.get("usage", (None, None))
     mid = ulid()
@@ -204,8 +229,13 @@ def main():
     session_write(mid)
 
     if args.extract:
-        sys.stdout.write(extract(response))
+        body_out = extract(response)
+        sys.stdout.write(BLUE + body_out + RESET if tty_out else body_out)
     sys.stdout.flush()
+
+    if tty_err:
+        sys.stderr.write(ORANGE + summary(model, tin, tout, mid) + RESET + "\n")
+        sys.stderr.flush()
     os._exit(0)   # skip interpreter teardown; the last token is already out
 
 
