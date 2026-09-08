@@ -8,6 +8,7 @@ one completion to stdout, append the new message to the tree.
     dic/dic.py          arguments, model config, HTTP, main flow
     dic/store.py        sqlite message tree, attachments, session pointers
     dic/adaptors/*.py   one wire protocol each
+    dic/models.yaml     packaged defaults, overlaid by the user's file
 """
 import argparse, http.client, json, os, re, sys, time, urllib.parse
 
@@ -21,28 +22,63 @@ from store import (CONFIG_DIR, db, die, history, normalize, session_read,
                    session_write, store_attachment, turns_from_rows, ulid)
 
 MODELS_PATH = os.path.join(CONFIG_DIR, "models.yaml")
+DEFAULTS_PATH = os.path.join(HERE, "models.yaml")
 ADAPTER_DIR = os.path.join(CONFIG_DIR, "adapters")
 
 
+def load_models():
+    """Every configured model, highest priority first.
+
+    $DIC_MODELS, then the user's models.yaml, then the defaults shipped in
+    the package.  The lists are concatenated rather than one shadowing the
+    other, so a user file adds and reorders without having to restate what
+    dic already knows; lookups take the first match, so a user entry reusing
+    a packaged model_id wins.
+    """
+    models = []
+    for path in (os.environ.get("DIC_MODELS"), MODELS_PATH, DEFAULTS_PATH):
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            with open(path) as f:
+                entries = yaml.safe_load(f)
+        except OSError as e:
+            die("cannot read %s: %s" % (path, e))
+        except yaml.YAMLError as e:
+            die("malformed yaml in %s: %s" % (path, e))
+        if entries is None:
+            continue
+        if not isinstance(entries, list):
+            die("%s: expected a list of models" % path)
+        models.extend(entries)
+    return models
+
+
 def load_model(model_id):
-    """The models.yaml entry named model_id, or the first entry if it is None.
+    """The entry named model_id, or the best default when it is None.
+
+    "Best" means the first entry whose api_key_name is actually set in the
+    environment, so an install that only has one provider's key configured
+    picks that provider without -m; failing that, simply the first entry,
+    which then fails with the missing-key message naming what to export.
 
     Nothing here is validated beyond the lookup itself: unknown keys are the
     extensibility mechanism and belong to the API, not to dic.
     """
-    try:
-        with open(MODELS_PATH) as f:
-            models = yaml.safe_load(f) or []
-    except OSError:
-        die("no models configured: %s" % MODELS_PATH)
+    models = load_models()
     if not models:
-        die("no models configured: %s" % MODELS_PATH)
-    if not model_id:
-        return models[0]
+        die("no models configured: write %s (see models.yaml.example)"
+            % MODELS_PATH)
+    if model_id:
+        for m in models:
+            if m.get("model_id") == model_id:
+                return m
+        die("unknown model: %s (configured: %s)"
+            % (model_id, ", ".join(str(m.get("model_id")) for m in models)))
     for m in models:
-        if m.get("model_id") == model_id:
+        if os.environ.get(m.get("api_key_name") or ""):
             return m
-    die("unknown model: %s" % model_id)
+    return models[0]
 
 
 def adaptor(api_type):

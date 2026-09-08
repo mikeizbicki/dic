@@ -13,4 +13,8 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["dic"]
+packages = ["dic", "dic.adaptors"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+dic = ["models.yaml"]
