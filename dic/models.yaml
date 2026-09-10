@@ -3,11 +3,15 @@
 # its entries are searched first and may reuse a model_id to override one
 # of these outright.
 #
-# With no -m, dic picks the first entry below whose api_key_name is set in
-# the environment.
+# With no -m, dic uses $DIC_MODEL if it is set; otherwise it picks the first
+# entry below whose api_key_name is set in the environment.
 #
 # "options" holds the default request options for a model; -o KEY=VALUE on
 # the command line overrides individual entries.
+#
+# "system" is a model's default system prompt.  It is used only when the
+# conversation is a new one and neither -s nor $DIC_SYSTEM is given; -c and
+# --mid always inherit the system prompt already stored in the thread.
 
 - model_id: cerebras-qwen
   model_name: qwen-3.8-27b

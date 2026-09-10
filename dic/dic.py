@@ -61,6 +61,10 @@ def load_models():
 def load_model(model_id):
     """The entry named model_id, or the best default when it is None.
 
+    model_id comes from -m or, failing that, $DIC_MODEL; either way an
+    unknown name is an error rather than a silent fallback, so a stale
+    export cannot quietly send the prompt somewhere else.
+
     "Best" means the first entry whose api_key_name is actually set in the
     environment, so an install that only has one provider's key configured
     picks that provider without -m; failing that, simply the first entry,
@@ -180,7 +184,7 @@ def summary(model, tin, tout, mid):
 def main():
     p = argparse.ArgumentParser(prog="dic", description="talk to a chat model")
     p.add_argument("prompt", nargs="*")
-    p.add_argument("-m", "--model")
+    p.add_argument("-m", "--model", default=os.environ.get("DIC_MODEL"))
     p.add_argument("-s", "--system")
     p.add_argument("-a", "--attachment", action="append", default=[])
     p.add_argument("-o", "--option", action="append", default=[],
@@ -215,6 +219,10 @@ def main():
         turns = turns_from_rows(conn, rows, api_type)
         if system is None:
             system = rows[-1]["system"]
+    elif system is None:
+        # fresh conversations only: continuing one must never let an exported
+        # default rewrite the system prompt the thread was started with
+        system = os.environ.get("DIC_SYSTEM") or model.get("system")
 
     atts = [store_attachment(conn, a) for a in args.attachment]
     turns.append({"role": "user",

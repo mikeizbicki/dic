@@ -43,6 +43,31 @@ Whenever possible, names and semantics remain the same as simonw's `llm`.
 | `-c`       | `--continue`   | continue the previous conversation in this session |
 |            | `--mid`        | continue the conversation from the given message id |
 
+### Defaults
+
+Two environment variables supply defaults for the two flags a user tends to want
+set the same way every time:
+
+| variable     | default for |
+| ------------ | ----------- |
+| `DIC_MODEL`  | `-m`        |
+| `DIC_SYSTEM` | `-s`        |
+
+These are environment variables rather than a second config file because a config
+file would add a stat and a parse to the latency path for something a shell startup
+file already does, and because the environment is inherited by subshells and
+overridable for a single command: `DIC_MODEL=gpt dic ...`.
+
+If `DIC_MODEL` names a model that is not configured, this is an error;
+a stale export must never silently fall back to some other model.
+
+`DIC_SYSTEM` applies only when starting a *new* conversation.
+With `-c` or `--mid` the system prompt is inherited from the conversation,
+so that an exported default cannot rewrite the system prompt of a running thread
+and leave the `system` column no longer describing it.
+The full precedence is `-s`, then the inherited prompt, then `DIC_SYSTEM`,
+then the model's own `system` key.
+
 **TODO:**
 Working with tools is currently not implemented, but planned for the future.
 The database and internal message representation are designed so that this can be added
@@ -178,6 +203,9 @@ Optional keys are:
 3. `headers`: a mapping merged verbatim into the HTTP request headers
 4. `cost_input` and `cost_output`: the price per million tokens for the input and output of the API call.
    At this point, batching and other types of cost-saving measures are not supported.
+5. `system`: a default system prompt for this model, used when the conversation is
+   new and neither `-s` nor `DIC_SYSTEM` is given.
+   Unlike `DIC_SYSTEM` this is per-model, which is what a model-specific house style needs.
 
 The `params` and `headers` keys are the primary extensibility mechanism.
 Most new provider features are new JSON fields or new beta headers,
@@ -185,7 +213,12 @@ so these can be used before `dic` knows anything about them.
 `dic` must not validate them: unknown keys are forwarded to the API and the API is allowed to reject them.
 Client-side validation is what makes tools obsolete on release day.
 
-The first entry in `models.yaml` is the default model when `-m` is not given.
+When `-m` is not given, the model is `$DIC_MODEL` if it is set.
+Otherwise `dic` uses the first configured entry whose `api_key_name` is actually set
+in the environment, so an install holding only one provider's key needs no configuration at all;
+failing even that, the first entry, which then fails with a message naming the key to export.
+Entries from `~/.config/fac/models.yaml` are searched before the packaged defaults,
+so the user's file controls this ordering.
 
 ### Wire protocols
 
