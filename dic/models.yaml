@@ -6,6 +6,30 @@
 # With no -m, dic picks the first entry below whose api_key_name is set in
 # the environment.
 
+- model_id: cerebras-qwen
+  model_name: qwen-3.8-27b
+  api_key_name: CEREBRAS_API_KEY
+  api_base: https://api.cerebras.ai/v1
+  cost_input: 0.0
+  cost_output: 0.0
+
+- model_id: groq-qwen
+  model_name: qwen/qwen3.8-27b
+  api_key_name: GROQ_API_KEY
+  api_base: https://api.groq.com/openai/v1
+  cost_input: 0.0
+  cost_output: 0.0
+  params:
+    max_tokens: 200
+
+- model_id: fable
+  model_name: claude-fable-5-1
+  api_key_name: ANTHROPIC_API_KEY
+  api_base: https://api.anthropic.com/v1
+  api_type: anthropic-messages
+  cost_input: 10.0
+  cost_output: 50.0
+
 - model_id: sonnet
   model_name: claude-sonnet-4-5
   api_type: anthropic-messages
