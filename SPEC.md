@@ -69,9 +69,26 @@ The full precedence is `-s`, then the inherited prompt, then `DIC_SYSTEM`,
 then the model's own `system` key.
 
 **TODO:**
-Working with tools is currently not implemented, but planned for the future.
-The database and internal message representation are designed so that this can be added
-without breaking existing conversations.
+1. Working with tools is currently not implemented, but planned for the future.
+    The database and internal message representation are designed so that this can be added
+    without breaking existing conversations.
+
+1. Many providers allow prompt caching to reduce cost of input tokens.
+    It's not clear to me the best way to structure this from the cli or in the various config files.
+
+1. Eventually we should be able to generate images/audio/video/etc using other API endpoints.
+    The existing adaptors framework will need to be lightly adjusted to support these additional output types and a way for specifying file output or mimetype will be needed,
+    but the biggest problem will be finding a good way to support pricing (which can have very different structures for different providers) and for handling non-sync APIs.
+    For example video files often take several minutes to generate, and fal.ai uses a polling strategy in its API to check on status.
+
+1. Eventually this system should be usable as a library and support async requests to allow many API calls to happen concurrently.
+    We want these async requests to simultaneously not complicate the code too much and not slow down the CLI interface where time to first token is critical.
+
+1. We want to be able collect statistics about provider/mode runtime performance and frequency of use.
+    These should be displayable as additional debug info in stderr and collected in q sqlite db for longterm tracking of performance over time.
+
+1. When piping to other programs, we don't want to color output and we should avoide printing stderr debug info.
+    It probably makes sense to have different levels of verbosity for stderr and these are controllable via flags and have different defaults for tty usage vs pipe/redirection.
 
 **OUT OF SCOPE:**
 
