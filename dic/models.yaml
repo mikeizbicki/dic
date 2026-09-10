@@ -5,6 +5,9 @@
 #
 # With no -m, dic picks the first entry below whose api_key_name is set in
 # the environment.
+#
+# "options" holds the default request options for a model; -o KEY=VALUE on
+# the command line overrides individual entries.
 
 - model_id: cerebras-qwen
   model_name: qwen-3.8-27b
@@ -19,7 +22,7 @@
   api_base: https://api.groq.com/openai/v1
   cost_input: 0.0
   cost_output: 0.0
-  params:
+  options:
     max_tokens: 200
 
 - model_id: fable
@@ -35,7 +38,7 @@
   api_type: anthropic-messages
   api_base: https://api.anthropic.com/v1
   api_key_name: ANTHROPIC_API_KEY
-  params:
+  options:
     max_tokens: 8192
 
 - model_id: gpt

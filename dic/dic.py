@@ -138,6 +138,31 @@ def extract(text):
     return m.group(1) if m else text
 
 
+def options(model, overrides):
+    """The model's default options with KEY=VALUE overrides applied.
+
+    Values are decoded as JSON when they parse, so numbers, booleans, lists
+    and objects all reach the API with their proper types; anything else is
+    passed through as a plain string.
+
+    >>> options({"options": {"max_tokens": 10}}, ["max_tokens=20", "stop=x"])
+    {'max_tokens': 20, 'stop': 'x'}
+    >>> options({}, ['tools=[]'])
+    {'tools': []}
+    """
+    opts = dict(model.get("options") or {})
+    for o in overrides:
+        if "=" not in o:
+            die("bad option (expected key=value): %s" % o)
+        k, v = o.split("=", 1)
+        try:
+            v = json.loads(v)
+        except ValueError:
+            pass
+        opts[k.strip()] = v
+    return opts
+
+
 def summary(model, tin, tout, mid):
     """The one-line cost and mid report written to stderr.
 
@@ -158,6 +183,8 @@ def main():
     p.add_argument("-m", "--model")
     p.add_argument("-s", "--system")
     p.add_argument("-a", "--attachment", action="append", default=[])
+    p.add_argument("-o", "--option", action="append", default=[],
+                   metavar="KEY=VALUE", help="override a model option")
     p.add_argument("-x", "--extract", action="store_true")
     p.add_argument("-c", "--continue", dest="cont", action="store_true")
     p.add_argument("--mid")
@@ -194,7 +221,7 @@ def main():
                   "blocks": [dict(a) for a in atts] + [{"type": "text", "text": prompt}]})
     turns = normalize(turns)
 
-    body = ad.build(model, turns, system, model.get("params") or {})
+    body = ad.build(model, turns, system, options(model, args.option))
     headers = {"content-type": "application/json", "accept": "text/event-stream"}
     headers.update(ad.auth(key))
     headers.update(model.get("headers") or {})
