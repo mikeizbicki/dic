@@ -101,7 +101,7 @@ RED = "\033[31m"             # errors
 RESET = "\033[0m"
 
 
-def colored(stream):
+def use_color(stream):
     """Whether to emit ANSI colour on stream.
 
     $DIC_COLOR (never|auto|always) wins, then $NO_COLOR, then isatty, so a
@@ -117,8 +117,8 @@ def colored(stream):
 
 def die(msg):
     """Report an error in red on stderr and exit nonzero."""
-    msg = "dic: %s\n" % msg
-    sys.stderr.write(RED + msg + RESET if colored(sys.stderr) else msg)
+    line = f"dic: {msg}\n"
+    sys.stderr.write(RED + line + RESET if use_color(sys.stderr) else line)
     sys.exit(1)
 
 
@@ -132,8 +132,8 @@ def report(verbosity, level, msg):
     """
     if verbosity < level:
         return
-    msg = msg + "\\n"
-    sys.stderr.write(ORANGE + msg + RESET if colored(sys.stderr) else msg)
+    line = f"{msg}\n"
+    sys.stderr.write(ORANGE + line + RESET if use_color(sys.stderr) else line)
     sys.stderr.flush()
 
 
@@ -153,13 +153,14 @@ def ulid():
     return "".join(B32[(n >> (5 * i)) & 31] for i in range(25, -1, -1))
 
 
-def data_url(b):
+def data_url(block):
     """An image block as an RFC 2397 data: URL, the form both OpenAI APIs take.
 
     >>> data_url({"type": "image", "mime_type": "image/png", "data": b"hi"})
     'data:image/png;base64,aGk='
     """
-    return "data:%s;base64,%s" % (b["mime_type"], base64.b64encode(b["data"]).decode())
+    encoded = base64.b64encode(block["data"]).decode()
+    return f"data:{block['mime_type']};base64,{encoded}"
 
 
 # ---------------------------------------------------------------- sqlite
@@ -175,13 +176,14 @@ def db():
 
 def history(conn, mid):
     """The ancestor chain of mid, oldest first (one recursive query, one trip)."""
-    cols = "mid,user,system,response,response_raw,prev_mid,api_type,attachments"
+    columns = "mid,user,system,response,response_raw,prev_mid,api_type,attachments"
+    qualified = ",".join(f"m.{c}" for c in columns.split(","))
     rows = conn.execute(
-        "WITH RECURSIVE chain(%s) AS ("
-        "  SELECT %s FROM messages WHERE mid=?"
+        f"WITH RECURSIVE chain({columns}) AS ("
+        f"  SELECT {columns} FROM messages WHERE mid=?"
         "  UNION ALL"
-        "  SELECT %s FROM messages m JOIN chain c ON m.mid=c.prev_mid)"
-        " SELECT * FROM chain" % (cols, cols, ",".join("m." + c for c in cols.split(","))),
+        f"  SELECT {qualified} FROM messages m JOIN chain c ON m.mid=c.prev_mid)"
+        " SELECT * FROM chain",
         (mid,)).fetchall()
     return list(reversed(rows))
 
@@ -194,27 +196,31 @@ def store_attachment(conn, path):
     """
     with open(path, "rb") as f:
         data = f.read()
-    mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    mime_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
     aid = ulid()
-    conn.execute("INSERT INTO attachments VALUES (?,?,?,?)", (aid, path, mime, data))
-    return {"aid": aid, "type": "image", "mime_type": mime, "data": data}
+    conn.execute("INSERT INTO attachments VALUES (?,?,?,?)",
+                 (aid, path, mime_type, data))
+    return {"aid": aid, "type": "image", "mime_type": mime_type, "data": data}
 
 
 def turns_from_rows(conn, rows, api_type):
     """History rows to IR turns, keeping "raw" where the api_type still matches."""
     turns = []
-    for r in rows:
+    for row in rows:
         blocks = []
-        for aid in json.loads(r["attachments"] or "[]"):
-            a = conn.execute("SELECT mime_type,data FROM attachments WHERE aid=?", (aid,)).fetchone()
-            if a:
-                blocks.append({"type": "image", "mime_type": a["mime_type"], "data": a["data"]})
-        blocks.append({"type": "text", "text": r["user"] or ""})
+        for aid in json.loads(row["attachments"] or "[]"):
+            att = conn.execute("SELECT mime_type,data FROM attachments WHERE aid=?",
+                               (aid,)).fetchone()
+            if att:
+                blocks.append({"type": "image", "mime_type": att["mime_type"],
+                               "data": att["data"]})
+        blocks.append({"type": "text", "text": row["user"] or ""})
         turns.append({"role": "user", "blocks": blocks})
-        t = {"role": "assistant", "blocks": [{"type": "text", "text": r["response"] or ""}]}
-        if r["api_type"] == api_type and r["response_raw"]:
-            t["raw"] = json.loads(r["response_raw"])
-        turns.append(t)
+        reply = {"role": "assistant",
+                 "blocks": [{"type": "text", "text": row["response"] or ""}]}
+        if row["api_type"] == api_type and row["response_raw"]:
+            reply["raw"] = json.loads(row["response_raw"])
+        turns.append(reply)
     return turns
 
 
@@ -231,17 +237,17 @@ def normalize(turns):
     [{'role': 'assistant', 'blocks': [], 'raw': ['opaque']}]
     """
     out = []
-    for t in turns:
-        if "raw" in t:
-            out.append(t)
+    for turn in turns:
+        if "raw" in turn:
+            out.append(turn)
             continue
-        t = dict(t, blocks=[b for b in t["blocks"] if b["type"] != "text" or b.get("text")])
-        if not t["blocks"]:
+        blocks = [b for b in turn["blocks"] if b["type"] != "text" or b.get("text")]
+        if not blocks:
             continue
-        if out and out[-1]["role"] == t["role"] and "raw" not in out[-1]:
-            out[-1]["blocks"] = out[-1]["blocks"] + t["blocks"]
+        if out and out[-1]["role"] == turn["role"] and "raw" not in out[-1]:
+            out[-1]["blocks"] = out[-1]["blocks"] + blocks
         else:
-            out.append(t)
+            out.append(dict(turn, blocks=blocks))
     return out
 
 
@@ -253,9 +259,10 @@ def session_path():
     One file per DIC_SESSION value, wiped on logout: no sessions table, no
     garbage collection, no locking, and the mtime is "last used" for free.
     """
-    rt = os.environ.get("XDG_RUNTIME_DIR")
-    d = os.path.join(rt, "fac", "dic") if rt else "/tmp/fac-%d/dic" % os.getuid()
-    return os.path.join(d, os.environ.get("DIC_SESSION", "global"))
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    base = (os.path.join(runtime, "fac", "dic") if runtime
+            else f"/tmp/fac-{os.getuid()}/dic")
+    return os.path.join(base, os.environ.get("DIC_SESSION", "global"))
 
 
 def session_read():
@@ -264,15 +271,15 @@ def session_read():
         with open(session_path()) as f:
             return f.read().strip()
     except OSError:
-        die("no conversation in this session (DIC_SESSION=%s)"
-            % os.environ.get("DIC_SESSION", "global"))
+        session = os.environ.get("DIC_SESSION", "global")
+        die(f"no conversation in this session (DIC_SESSION={session})")
 
 
 def session_write(mid):
     """Point this session at mid, atomically."""
-    p = session_path()
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    tmp = p + ".%d.tmp" % os.getpid()
+    path = session_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w") as f:
         f.write(mid)
-    os.replace(tmp, p)
+    os.replace(tmp, path)

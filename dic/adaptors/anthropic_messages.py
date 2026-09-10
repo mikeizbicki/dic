@@ -34,19 +34,19 @@ def build(model, turns, system, params):
     ('sys', 10)
     """
     msgs = []
-    for t in turns:
-        if "raw" in t:
-            msgs.append({"role": "assistant", "content": t["raw"]})
+    for turn in turns:
+        if "raw" in turn:
+            msgs.append({"role": "assistant", "content": turn["raw"]})
             continue
         content = []
-        for b in t["blocks"]:
-            if b["type"] == "text":
-                content.append({"type": "text", "text": b["text"]})
-            elif b["type"] == "image":
+        for block in turn["blocks"]:
+            if block["type"] == "text":
+                content.append({"type": "text", "text": block["text"]})
+            elif block["type"] == "image":
                 content.append({"type": "image", "source": {
-                    "type": "base64", "media_type": b["mime_type"],
-                    "data": base64.b64encode(b["data"]).decode()}})
-        msgs.append({"role": t["role"], "content": content})
+                    "type": "base64", "media_type": block["mime_type"],
+                    "data": base64.b64encode(block["data"]).decode()}})
+        msgs.append({"role": turn["role"], "content": content})
     body = {"model": model["model_name"], "messages": msgs, "stream": True,
             "max_tokens": 4096}
     if system:
@@ -55,7 +55,7 @@ def build(model, turns, system, params):
     return body
 
 
-def parse(e, acc):
+def parse(event, acc):
     """Rebuild acc["raw"] from the event stream; only text deltas are printed.
 
     Unknown block types accumulate as-is, so a feature dic has never heard of
@@ -76,29 +76,31 @@ def parse(e, acc):
     >>> acc["usage"], acc["raw"]
     ((5, 1), [{'type': 'text', 'text': 'hi'}])
     """
-    ty = e.get("type")
+    kind = event.get("type")
     blocks = acc.setdefault("raw", [])
-    if ty == "message_start":
-        u = (e.get("message") or {}).get("usage") or {}
-        acc["usage"] = (u.get("input_tokens"), u.get("output_tokens"))
-    elif ty == "content_block_start":
-        blocks.append(dict(e.get("content_block") or {}))
-    elif ty == "content_block_delta" and blocks:
-        b, d = blocks[-1], e.get("delta") or {}
-        for k, dk in (("text", "text_delta"), ("thinking", "thinking_delta"),
-                      ("signature", "signature_delta")):
-            if d.get("type") == dk:
-                b[k] = b.get(k, "") + d[k]
-                return d[k] if k == "text" else ""
-        if d.get("type") == "input_json_delta":
-            b["_json"] = b.get("_json", "") + d["partial_json"]
-    elif ty == "content_block_stop" and blocks:
-        b = blocks[-1]
-        if "_json" in b:
-            b["input"] = json.loads(b.pop("_json") or "{}")
-    elif ty == "message_delta":
-        u = e.get("usage") or {}
-        acc["usage"] = (acc.get("usage", (None, None))[0], u.get("output_tokens"))
+    if kind == "message_start":
+        usage = (event.get("message") or {}).get("usage") or {}
+        acc["usage"] = (usage.get("input_tokens"), usage.get("output_tokens"))
+    elif kind == "content_block_start":
+        blocks.append(dict(event.get("content_block") or {}))
+    elif kind == "content_block_delta" and blocks:
+        block, delta = blocks[-1], event.get("delta") or {}
+        for field, delta_type in (("text", "text_delta"),
+                                  ("thinking", "thinking_delta"),
+                                  ("signature", "signature_delta")):
+            if delta.get("type") == delta_type:
+                block[field] = block.get(field, "") + delta[field]
+                return delta[field] if field == "text" else ""
+        if delta.get("type") == "input_json_delta":
+            block["_json"] = block.get("_json", "") + delta["partial_json"]
+    elif kind == "content_block_stop" and blocks:
+        block = blocks[-1]
+        if "_json" in block:
+            block["input"] = json.loads(block.pop("_json") or "{}")
+    elif kind == "message_delta":
+        usage = event.get("usage") or {}
+        acc["usage"] = (acc.get("usage", (None, None))[0],
+                        usage.get("output_tokens"))
     return ""
 
 

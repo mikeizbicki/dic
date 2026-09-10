@@ -29,27 +29,28 @@ def build(model, turns, system, params):
     >>> b["instructions"], b["stream"]
     ('sys', True)
     """
-    inp = []
-    for t in turns:
-        if "raw" in t:
-            inp.extend(t["raw"])
+    items = []
+    for turn in turns:
+        if "raw" in turn:
+            items.extend(turn["raw"])
             continue
         content = []
-        for b in t["blocks"]:
-            if b["type"] == "text":
-                content.append({"type": "input_text" if t["role"] == "user" else "output_text",
-                                "text": b["text"]})
-            elif b["type"] == "image":
-                content.append({"type": "input_image", "image_url": data_url(b)})
-        inp.append({"role": t["role"], "content": content})
-    body = {"model": model["model_name"], "input": inp, "stream": True}
+        for block in turn["blocks"]:
+            if block["type"] == "text":
+                content.append({"type": "input_text" if turn["role"] == "user"
+                                        else "output_text",
+                                "text": block["text"]})
+            elif block["type"] == "image":
+                content.append({"type": "input_image", "image_url": data_url(block)})
+        items.append({"role": turn["role"], "content": content})
+    body = {"model": model["model_name"], "input": items, "stream": True}
     if system:
         body["instructions"] = system
     body.update(params)
     return body
 
 
-def parse(e, acc):
+def parse(event, acc):
     """Text deltas print; the terminal event carries the output list and usage.
 
     >>> acc = {}
@@ -62,14 +63,14 @@ def parse(e, acc):
     >>> acc["usage"], acc["raw"]
     ((2, 1), [{'type': 'message'}])
     """
-    ty = e.get("type")
-    if ty == "response.output_text.delta":
-        return e.get("delta") or ""
-    if ty in ("response.completed", "response.incomplete", "response.failed"):
-        r = e.get("response") or {}
-        acc["raw"] = r.get("output") or []
-        u = r.get("usage") or {}
-        acc["usage"] = (u.get("input_tokens"), u.get("output_tokens"))
+    kind = event.get("type")
+    if kind == "response.output_text.delta":
+        return event.get("delta") or ""
+    if kind in ("response.completed", "response.incomplete", "response.failed"):
+        resp = event.get("response") or {}
+        acc["raw"] = resp.get("output") or []
+        usage = resp.get("usage") or {}
+        acc["usage"] = (usage.get("input_tokens"), usage.get("output_tokens"))
     return ""
 
 

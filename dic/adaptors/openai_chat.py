@@ -6,7 +6,7 @@ Every adaptor module exports the same five names:
     PATH            the path appended to the model's api_base
     auth(key)       headers carrying the API key
     build(...)      IR turns -> request body
-    parse(e, acc)   one SSE event -> text to print, accumulating state in acc
+    parse(event, acc)  one SSE event -> text to print, state accumulated in acc
     finish(acc)     acc -> the JSON stored in messages.response_raw
 """
 from store import data_url
@@ -38,26 +38,27 @@ def build(model, turns, system, params):
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})
-    for t in turns:
-        if "raw" in t:
-            msgs.append(t["raw"])
+    for turn in turns:
+        if "raw" in turn:
+            msgs.append(turn["raw"])
             continue
         parts = []
-        for b in t["blocks"]:
-            if b["type"] == "text":
-                parts.append({"type": "text", "text": b["text"]})
-            elif b["type"] == "image":
-                parts.append({"type": "image_url", "image_url": {"url": data_url(b)}})
-        if all(p["type"] == "text" for p in parts):
-            parts = "\n\n".join(p["text"] for p in parts)
-        msgs.append({"role": t["role"], "content": parts})
+        for block in turn["blocks"]:
+            if block["type"] == "text":
+                parts.append({"type": "text", "text": block["text"]})
+            elif block["type"] == "image":
+                parts.append({"type": "image_url",
+                              "image_url": {"url": data_url(block)}})
+        if all(part["type"] == "text" for part in parts):
+            parts = "\n\n".join(part["text"] for part in parts)
+        msgs.append({"role": turn["role"], "content": parts})
     body = {"model": model["model_name"], "messages": msgs, "stream": True,
             "stream_options": {"include_usage": True}}
     body.update(params)
     return body
 
 
-def parse(e, acc):
+def parse(event, acc):
     """Return the text of one delta event and record usage when it appears.
 
     >>> acc = {}
@@ -68,15 +69,15 @@ def parse(e, acc):
     >>> acc["usage"]
     (3, 1)
     """
-    u = e.get("usage")
-    if u:
-        acc["usage"] = (u.get("prompt_tokens"), u.get("completion_tokens"))
-    out = ""
-    for ch in e.get("choices") or []:
-        out += (ch.get("delta") or {}).get("content") or ""
-    if out:
-        acc.setdefault("text", []).append(out)
-    return out
+    usage = event.get("usage")
+    if usage:
+        acc["usage"] = (usage.get("prompt_tokens"), usage.get("completion_tokens"))
+    text = ""
+    for choice in event.get("choices") or []:
+        text += (choice.get("delta") or {}).get("content") or ""
+    if text:
+        acc.setdefault("text", []).append(text)
+    return text
 
 
 def finish(acc):

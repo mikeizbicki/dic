@@ -55,26 +55,26 @@ def parent(model_id):
     return model_id.rsplit("+", 1)[0] if "+" in model_id else None
 
 
-def patch(a, b):
-    """RFC 7386 merge of b into a, matching sqlite's json_patch exactly.
+def merge(base, over):
+    """RFC 7386 merge of over into base, matching sqlite's json_patch exactly.
 
     Used only when two source files define the same id; the resolution of a
     chain is done by sqlite, with these same semantics.
 
-    >>> patch({"options": {"max_tokens": 10, "top_p": 1}},
+    >>> merge({"options": {"max_tokens": 10, "top_p": 1}},
     ...       {"options": {"max_tokens": 20}})
     {'options': {'max_tokens': 20, 'top_p': 1}}
-    >>> patch({"system": "x"}, {"system": None})
+    >>> merge({"system": "x"}, {"system": None})
     {}
     """
-    out = dict(a)
-    for k, v in b.items():
-        if v is None:
-            out.pop(k, None)
-        elif isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = patch(out[k], v)
+    out = dict(base)
+    for key, value in over.items():
+        if value is None:
+            out.pop(key, None)
+        elif isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = merge(out[key], value)
         else:
-            out[k] = v
+            out[key] = value
     return out
 
 
@@ -95,18 +95,18 @@ def entries(path):
         with open(path) as f:
             data = json.load(f)
     except OSError as e:
-        die("cannot read %s: %s" % (path, e))
+        die(f"cannot read {path}: {e}")
     except ValueError as e:
-        die("malformed json in %s: %s" % (path, e))
+        die(f"malformed json in {path}: {e}")
     if not isinstance(data, dict):
-        die("%s: expected an object mapping model_id to its keys" % path)
+        die(f"{path}: expected an object mapping model_id to its keys")
     out = {}
-    for k, v in data.items():
-        if k.startswith("#"):
+    for model_id, keys in data.items():
+        if model_id.startswith("#"):
             continue
-        if not isinstance(v, dict):
-            die("%s: %s: expected an object" % (path, k))
-        out[k] = v
+        if not isinstance(keys, dict):
+            die(f"{path}: {model_id}: expected an object")
+        out[model_id] = keys
     return out
 
 
@@ -117,25 +117,27 @@ def sync(conn):
     pays four stats and nothing else.
     """
     stamps = []
-    for p in sources():
-        st = os.stat(p)
-        stamps.append((p, st.st_mtime_ns, st.st_size))
-    have = [tuple(r) for r in conn.execute(
+    for path in sources():
+        st = os.stat(path)
+        stamps.append((path, st.st_mtime_ns, st.st_size))
+    cached = [tuple(r) for r in conn.execute(
         "SELECT path, mtime, size FROM config_meta ORDER BY path")]
-    if have == sorted(stamps):
+    if cached == sorted(stamps):
         return
 
-    merged, source = {}, {}
-    for p, _, _ in stamps:
-        for k, v in entries(p).items():
-            merged[k], source[k] = patch(merged.get(k, {}), v), p
+    combined, origin = {}, {}
+    for path, _, _ in stamps:
+        for model_id, keys in entries(path).items():
+            combined[model_id] = merge(combined.get(model_id, {}), keys)
+            origin[model_id] = path
 
     rows = []
-    for pos, (k, v) in enumerate(merged.items()):
-        v = dict(v)
-        abstract = 1 if v.pop("abstract", False) else 0
-        alias = v.pop("alias", None)
-        rows.append((k, parent(k), json.dumps(v), abstract, alias, pos, source[k]))
+    for pos, (model_id, keys) in enumerate(combined.items()):
+        keys = dict(keys)
+        abstract = 1 if keys.pop("abstract", False) else 0
+        alias = keys.pop("alias", None)
+        rows.append((model_id, parent(model_id), json.dumps(keys), abstract,
+                     alias, pos, origin[model_id]))
     with conn:
         conn.execute("DELETE FROM config")
         conn.execute("DELETE FROM config_meta")
@@ -170,31 +172,31 @@ def materialize(conn, model_id):
     """
     if defined(conn, model_id):
         return
-    segs = model_id.split("+")
-    if len(segs) == 1 or not defined(conn, segs[0]):
-        die("unknown model: %s (try `dic --models`)" % model_id)
-    new = []
-    for i in range(1, len(segs) + 1):
-        pid = "+".join(segs[:i])
-        if defined(conn, pid):
+    names = model_id.split("+")
+    if len(names) == 1 or not defined(conn, names[0]):
+        die(f"unknown model: {model_id} (try `dic --models`)")
+    rows = []
+    for i in range(1, len(names) + 1):
+        prefix = "+".join(names[:i])
+        if defined(conn, prefix):
             continue
         keys = "{}"
-        for j in range(1, i):
-            r = conn.execute("SELECT keys FROM config WHERE id=?",
-                             ("+".join(segs[j:i]),)).fetchone()
-            if r:
-                keys = r["keys"]
+        for j in range(1, i):          # the longest defined suffix of the prefix
+            row = conn.execute("SELECT keys FROM config WHERE id=?",
+                               ("+".join(names[j:i]),)).fetchone()
+            if row:
+                keys = row["keys"]
                 break
-        new.append((pid, parent(pid), keys, 0, None, None, "ad-hoc"))
-    if new:
+        rows.append((prefix, parent(prefix), keys, 0, None, None, "ad-hoc"))
+    if rows:
         with conn:
-            conn.executemany("INSERT OR IGNORE INTO config VALUES (?,?,?,?,?,?,?)", new)
+            conn.executemany("INSERT OR IGNORE INTO config VALUES (?,?,?,?,?,?,?)", rows)
 
 
-def merged(conn, model_id):
+def resolved_keys(conn, model_id):
     """The folded keys of model_id's chain, or {} if there is no such chain."""
-    r = conn.execute(RESOLVE, (model_id,)).fetchone()
-    return json.loads(r[0]) if r and r[0] else {}
+    row = conn.execute(RESOLVE, (model_id,)).fetchone()
+    return json.loads(row[0]) if row and row[0] else {}
 
 
 def resolve(conn, model_id):
@@ -205,17 +207,17 @@ def resolve(conn, model_id):
     """
     model_id = canonical(conn, model_id)
     materialize(conn, model_id)
-    r = conn.execute("SELECT abstract FROM config WHERE id=?", (model_id,)).fetchone()
-    if r and r["abstract"]:
-        die("%s is abstract (a provider or mixin), not a model" % model_id)
-    cfg = merged(conn, model_id)
+    row = conn.execute("SELECT abstract FROM config WHERE id=?", (model_id,)).fetchone()
+    if row and row["abstract"]:
+        die(f"{model_id} is abstract (a provider or mixin), not a model")
+    cfg = resolved_keys(conn, model_id)
     if not cfg.get("model_name"):
-        die("%s: no model_name configured (try `dic --models`)" % model_id)
+        die(f"{model_id}: no model_name configured (try `dic --models`)")
     cfg["model_id"] = model_id
     return cfg
 
 
-def ids(conn):
+def model_ids(conn):
     """Every id that -m accepts, in configuration order."""
     return [r["id"] for r in conn.execute(
         "SELECT id FROM config WHERE abstract=0 AND pos IS NOT NULL ORDER BY pos")]
@@ -229,12 +231,12 @@ def default_id(conn):
     that the first entry, which then fails naming the key to export.
     """
     first = None
-    for i in ids(conn):
-        first = first or i
-        if os.environ.get(merged(conn, i).get("api_key_name") or ""):
-            return i
+    for model_id in model_ids(conn):
+        first = first or model_id
+        if os.environ.get(resolved_keys(conn, model_id).get("api_key_name") or ""):
+            return model_id
     if not first:
-        die("no models configured: write %s" % MODELS_PATH)
+        die(f"no models configured: write {MODELS_PATH}")
     return first
 
 
@@ -244,7 +246,7 @@ def aliases(conn):
     `dic.sh` evals this, so the shell name and the model name come from the
     same table and cannot drift apart.
     """
-    return "".join("alias %s='dic -m %s'\n" % (r["alias"], r["id"])
+    return "".join(f"alias {r['alias']}='dic -m {r['id']}'\n"
                    for r in conn.execute(
                        "SELECT id, alias FROM config"
                        " WHERE alias IS NOT NULL AND abstract=0 ORDER BY pos"))
