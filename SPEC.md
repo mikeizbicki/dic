@@ -268,3 +268,7 @@ Conversion must additionally normalize the history into the form the target requ
 merge consecutive same-role turns, drop empty text blocks,
 and move the system prompt between a top-level parameter and a leading message as appropriate.
 A single-provider conversation never touches this code path.
+
+## shell integration
+
+The script `dic.sh` contains useful aliases and defaults.
