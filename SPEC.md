@@ -27,7 +27,9 @@ All API access is plain HTTP against the documented JSON endpoints.
 Program architecture should be simple and not overengineered.
 Intro data structures students should find the architecture to be the "obvious" way they would have done things,
 with as few as possible files/classes/functions.
-Code should be succinct and low token.
+Code should be succinct and low token but human friendly.
+Include useful variable names and doctests,
+but do not go overboard on verbosity.
 
 ## Options
 
