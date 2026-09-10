@@ -1,0 +1,79 @@
+{
+  "#": "Defaults shipped with dic.  Do not edit: this file is replaced on upgrade.  Write ~/.config/fac/providers.json and ~/.config/fac/models.json (or point $DIC_MODELS at a file) instead; their entries are merged over these, key by key, so an id may be reused to change one setting.  Keys beginning with '#' are comments.",
+
+  "#ids": "An id is a '+'-separated chain, weakest first: 'groq+qwen' is the entry 'qwen' layered on the entry 'groq'.  Entries with \"abstract\": true are providers or mixins; they cannot be used with -m, only inherited from.  Chains nobody wrote down work too: 'thinking-high+anthropic+sonnet'.",
+
+  "cerebras": {
+    "abstract": true,
+    "api_base": "https://api.cerebras.ai/v1",
+    "api_key_name": "CEREBRAS_API_KEY"
+  },
+
+  "groq": {
+    "abstract": true,
+    "api_base": "https://api.groq.com/openai/v1",
+    "api_key_name": "GROQ_API_KEY"
+  },
+
+  "anthropic": {
+    "abstract": true,
+    "api_type": "anthropic-messages",
+    "api_base": "https://api.anthropic.com/v1",
+    "api_key_name": "ANTHROPIC_API_KEY"
+  },
+
+  "openai": {
+    "abstract": true,
+    "api_type": "openai-responses",
+    "api_base": "https://api.openai.com/v1",
+    "api_key_name": "OPENAI_API_KEY"
+  },
+
+  "local": {
+    "abstract": true,
+    "api_base": "http://localhost:8080/v1",
+    "api_key_name": "LOCAL_API_KEY"
+  },
+
+  "thinking-high": {
+    "abstract": true,
+    "options": {"thinking": {"type": "enabled", "budget_tokens": 8000}}
+  },
+
+  "cerebras+qwen": {
+    "model_name": "qwen-3.8-27b",
+    "cost_input": 0.0,
+    "cost_output": 0.0
+  },
+
+  "groq+qwen": {
+    "model_name": "qwen/qwen3.8-27b",
+    "alias": "qwen",
+    "cost_input": 0.0,
+    "cost_output": 0.0,
+    "options": {"max_tokens": 200}
+  },
+
+  "anthropic+fable": {
+    "model_name": "claude-fable-5-1",
+    "alias": "fable",
+    "cost_input": 10.0,
+    "cost_output": 50.0
+  },
+
+  "anthropic+sonnet": {
+    "model_name": "claude-sonnet-4-5",
+    "alias": "sonnet",
+    "options": {"max_tokens": 8192}
+  },
+
+  "openai+gpt": {
+    "model_name": "gpt-4.1",
+    "alias": "gpt"
+  },
+
+  "local+model": {
+    "model_name": "local-model",
+    "api_type": "openai-chat"
+  }
+}

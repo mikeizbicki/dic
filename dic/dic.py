@@ -2,13 +2,14 @@
 """dic - a minimalist CLI for chat LLMs.  See SPEC.md.
 
 This file is the entry point and the whole control flow: parse arguments,
-pick a model out of models.yaml, rebuild the conversation from sqlite, stream
+pick a model out of the config cache, rebuild the conversation from sqlite, stream
 one completion to stdout, append the new message to the tree.
 
-    dic/dic.py          arguments, model config, HTTP, main flow
+    dic/dic.py          arguments, HTTP, main flow
+    dic/config.py       model and provider config: json sources, sqlite cache
     dic/store.py        sqlite message tree, attachments, session pointers
     dic/adaptors/*.py   one wire protocol each
-    dic/models.yaml     packaged defaults, overlaid by the user's file
+    dic/models.json     packaged defaults, overlaid by the user's files
 """
 import argparse, http.client, json, os, re, sys, time, urllib.parse
 
@@ -16,77 +17,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:          # so `store` and `adaptors.*` resolve whether
     sys.path.insert(0, HERE)      # we are run as a script or as `-m dic.dic`
 
-import yaml
+import config
+from store import (BLUE, CONFIG_DIR, ORANGE, RESET, colored, db, die, history,
+                   normalize, session_read, session_write, store_attachment,
+                   turns_from_rows, ulid)
 
-from store import (CONFIG_DIR, db, die, history, normalize, session_read,
-                   session_write, store_attachment, turns_from_rows, ulid)
-
-MODELS_PATH = os.path.join(CONFIG_DIR, "models.yaml")
-DEFAULTS_PATH = os.path.join(HERE, "models.yaml")
 ADAPTER_DIR = os.path.join(CONFIG_DIR, "adapters")
-
-BLUE = "\033[38;5;39m"       # model output, when stdout is a terminal
-ORANGE = "\033[38;5;208m"    # the cost summary, when stderr is a terminal
-RESET = "\033[0m"
-
-
-def load_models():
-    """Every configured model, highest priority first.
-
-    $DIC_MODELS, then the user's models.yaml, then the defaults shipped in
-    the package.  The lists are concatenated rather than one shadowing the
-    other, so a user file adds and reorders without having to restate what
-    dic already knows; lookups take the first match, so a user entry reusing
-    a packaged model_id wins.
-    """
-    models = []
-    for path in (os.environ.get("DIC_MODELS"), MODELS_PATH, DEFAULTS_PATH):
-        if not path or not os.path.exists(path):
-            continue
-        try:
-            with open(path) as f:
-                entries = yaml.safe_load(f)
-        except OSError as e:
-            die("cannot read %s: %s" % (path, e))
-        except yaml.YAMLError as e:
-            die("malformed yaml in %s: %s" % (path, e))
-        if entries is None:
-            continue
-        if not isinstance(entries, list):
-            die("%s: expected a list of models" % path)
-        models.extend(entries)
-    return models
-
-
-def load_model(model_id):
-    """The entry named model_id, or the best default when it is None.
-
-    model_id comes from -m or, failing that, $DIC_MODEL; either way an
-    unknown name is an error rather than a silent fallback, so a stale
-    export cannot quietly send the prompt somewhere else.
-
-    "Best" means the first entry whose api_key_name is actually set in the
-    environment, so an install that only has one provider's key configured
-    picks that provider without -m; failing that, simply the first entry,
-    which then fails with the missing-key message naming what to export.
-
-    Nothing here is validated beyond the lookup itself: unknown keys are the
-    extensibility mechanism and belong to the API, not to dic.
-    """
-    models = load_models()
-    if not models:
-        die("no models configured: write %s (see models.yaml.example)"
-            % MODELS_PATH)
-    if model_id:
-        for m in models:
-            if m.get("model_id") == model_id:
-                return m
-        die("unknown model: %s (configured: %s)"
-            % (model_id, ", ".join(str(m.get("model_id")) for m in models)))
-    for m in models:
-        if os.environ.get(m.get("api_key_name") or ""):
-            return m
-    return models[0]
 
 
 def adaptor(api_type):
@@ -192,7 +128,19 @@ def main():
     p.add_argument("-x", "--extract", action="store_true")
     p.add_argument("-c", "--continue", dest="cont", action="store_true")
     p.add_argument("--mid")
+    p.add_argument("--aliases", action="store_true",
+                   help="print shell alias definitions and exit")
+    p.add_argument("--models", action="store_true",
+                   help="list the configured model ids and exit")
     args = p.parse_args()
+
+    conn = db()
+    config.sync(conn)     # a stat per source file; a parse only when one moved
+    if args.aliases or args.models:
+        sys.stdout.write(config.aliases(conn) if args.aliases
+                         else "".join(i + "\n" for i in config.ids(conn)))
+        sys.stdout.flush()
+        os._exit(0)
 
     prompt = " ".join(args.prompt)
     if not sys.stdin.isatty():
@@ -201,14 +149,16 @@ def main():
     if not prompt.strip() and not args.attachment:
         die("no prompt")
 
-    model = load_model(args.model)
+    model = config.resolve(conn, args.model or config.default_id(conn))
     api_type = model.get("api_type", "openai-chat")
     ad = adaptor(api_type)
-    key = os.environ.get(model["api_key_name"])
+    key_name = model.get("api_key_name")
+    if not key_name:
+        die("%s: no api_key_name configured" % model["model_id"])
+    key = os.environ.get(key_name)
     if not key:
-        die("%s is not set" % model["api_key_name"])
+        die("%s is not set" % key_name)
 
-    conn = db()
     prev_mid = args.mid or (session_read() if args.cont else None)
 
     turns, system = [], args.system
@@ -234,21 +184,21 @@ def main():
     headers.update(ad.auth(key))
     headers.update(model.get("headers") or {})
 
-    tty_out, tty_err = sys.stdout.isatty(), sys.stderr.isatty()
-    acc, out, colored = {}, [], False
+    tty_out, tty_err = colored(sys.stdout), colored(sys.stderr)
+    acc, out, painted = {}, [], False
     for event in sse(model["api_base"], ad.PATH, headers, body):
         text = ad.parse(event, acc)
         if text:
             out.append(text)
             if not args.extract:
-                if tty_out and not colored:
+                if tty_out and not painted:
                     sys.stdout.write(BLUE)
-                    colored = True
+                    painted = True
                 sys.stdout.write(text)
                 sys.stdout.flush()
     response = "".join(out)
     if not args.extract:
-        if colored:
+        if painted:
             sys.stdout.write(RESET)
         if response and not response.endswith("\n"):
             sys.stdout.write("\n")
@@ -268,8 +218,9 @@ def main():
         sys.stdout.write(BLUE + body_out + RESET if tty_out else body_out)
     sys.stdout.flush()
 
-    if tty_err:
-        sys.stderr.write(ORANGE + summary(model, tin, tout, mid) + RESET + "\n")
+    if sys.stderr.isatty():
+        s = summary(model, tin, tout, mid)
+        sys.stderr.write((ORANGE + s + RESET if tty_err else s) + "\n")
         sys.stderr.flush()
     os._exit(0)   # skip interpreter teardown; the last token is already out
 

@@ -1,4 +1,5 @@
-"""Persistence: the sqlite message tree, attachment blobs, session pointers.
+"""Persistence: the sqlite message tree, attachment blobs, session pointers,
+the parsed configuration cache that config.py fills, and colour policy.
 
 Everything in dic that touches the disk lives here.  The rest of the program
 sees only the provider-neutral intermediate representation of a conversation:
@@ -37,12 +38,45 @@ CREATE TABLE IF NOT EXISTS attachments (
     path TEXT,
     mime_type TEXT,
     data BLOB);
+CREATE TABLE IF NOT EXISTS config (
+    id TEXT PRIMARY KEY,
+    parent TEXT,
+    keys TEXT,
+    abstract INTEGER,
+    alias TEXT,
+    pos INTEGER,
+    source TEXT);
+CREATE INDEX IF NOT EXISTS config_parent ON config(parent);
+CREATE TABLE IF NOT EXISTS config_meta (
+    path TEXT PRIMARY KEY,
+    mtime INTEGER,
+    size INTEGER);
 """
+
+BLUE = "\033[38;5;39m"       # model output
+ORANGE = "\033[38;5;208m"    # the cost summary
+RED = "\033[31m"             # errors
+RESET = "\033[0m"
+
+
+def colored(stream):
+    """Whether to emit ANSI colour on stream.
+
+    $DIC_COLOR (never|auto|always) wins, then $NO_COLOR, then isatty, so a
+    pipe gets clean text without the caller having to ask and a pager can ask
+    for colour anyway.  dic never prints uncoloured text to a terminal: every
+    stream has a meaning (blue output, orange cost, red error).
+    """
+    mode = os.environ.get("DIC_COLOR", "auto")
+    if mode in ("never", "always"):
+        return mode == "always"
+    return stream.isatty() and not os.environ.get("NO_COLOR")
 
 
 def die(msg):
-    """Report an error on stderr and exit nonzero."""
-    sys.stderr.write("dic: %s\n" % msg)
+    """Report an error in red on stderr and exit nonzero."""
+    msg = "dic: %s\n" % msg
+    sys.stderr.write(RED + msg + RESET if colored(sys.stderr) else msg)
     sys.exit(1)
 
 
