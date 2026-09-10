@@ -85,27 +85,27 @@ so a pipe gets clean text without the caller having to ask.
     The database and internal message representation are designed so that this can be added
     without breaking existing conversations.
 
-1. Many providers allow prompt caching to reduce cost of input tokens.
+2. Many providers allow prompt caching to reduce cost of input tokens.
     It's not clear to me the best way to structure this from the cli or in the various config files.
 
-1. Eventually we should be able to generate images/audio/video/etc using other API endpoints.
+3. Eventually we should be able to generate images/audio/video/etc using other API endpoints.
     The existing adaptors framework will need to be lightly adjusted to support these additional output types and a way for specifying file output or mimetype will be needed,
     but the biggest problem will be finding a good way to support pricing (which can have very different structures for different providers) and for handling non-sync APIs.
     For example video files often take several minutes to generate, and fal.ai uses a polling strategy in its API to check on status.
 
-1. There is no cross-provider standard for listing models or their prices.
+4. There is no cross-provider standard for listing models or their prices.
     `GET /v1/models` is OpenAI-shaped and served by Groq, Together, vLLM and OpenRouter,
     but only OpenRouter reports `pricing`, and Anthropic reports none.
     A future `dic --sync` should hit each provider's list endpoint and *generate* the
     entries under a provider id, never fetching prices on the latency path.
 
-1. Eventually this system should be usable as a library and support async requests to allow many API calls to happen concurrently.
+5. Eventually this system should be usable as a library and support async requests to allow many API calls to happen concurrently.
     We want these async requests to simultaneously not complicate the code too much and not slow down the CLI interface where time to first token is critical.
 
-1. We want to be able collect statistics about provider/mode runtime performance and frequency of use.
+6. We want to be able collect statistics about provider/mode runtime performance and frequency of use.
     These should be displayable as additional debug info in stderr and collected in q sqlite db for longterm tracking of performance over time.
 
-1. Color already follows `$DIC_COLOR`, `$NO_COLOR` and isatty, and the cost summary is
+7. Color already follows `$DIC_COLOR`, `$NO_COLOR` and isatty, and the cost summary is
     printed only to a terminal.  What remains is graded verbosity levels for stderr,
     controllable by a flag, with different defaults for tty and pipe/redirection.
 
