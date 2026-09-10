@@ -44,6 +44,9 @@ Whenever possible, names and semantics remain the same as simonw's `llm`.
 |            | `--mid`        | continue the conversation from the given message id |
 |            | `--aliases`    | print shell alias definitions for `dic.sh` to eval |
 |            | `--models`     | list the configured model ids |
+|            | `--stats`      | print per-model runtime and usage statistics |
+| `-v`       | `--verbose`    | raise stderr verbosity; repeatable |
+| `-q`       | `--quiet`      | print nothing to stderr but errors |
 
 ### Defaults
 
@@ -54,6 +57,7 @@ set the same way every time:
 | ------------ | ----------- |
 | `DIC_MODEL`  | `-m`        |
 | `DIC_SYSTEM` | `-s`        |
+| `DIC_VERBOSITY` | `-v`/`-q` |
 
 These are environment variables rather than a second config file because a config
 file would add a stat and a parse to the latency path for something a shell startup
@@ -80,6 +84,21 @@ suppressed when it is `never`,
 and otherwise used only when the stream is a terminal and `$NO_COLOR` is unset,
 so a pipe gets clean text without the caller having to ask.
 
+### Verbosity
+
+stderr is graded, and the grade is one integer resolved once at startup:
+`$DIC_VERBOSITY` if set, otherwise `1` when stderr is a terminal and `0` when it
+is not, then moved by `-q` (to 0) or `-v` (each repetition one higher).
+
+| level | stderr |
+| ----- | ------ |
+| 0 | errors only |
+| 1 | the cost and `--mid` line |
+| 2 | and the timings of this call: overhead, ttft, tok/s, total |
+| 3 | and the request body and URL before it is sent |
+
+All of it goes through one `report(verbosity, level, msg)` in `store.py`.
+
 **TODO:**
 1. Working with tools is currently not implemented, but planned for the future.
     The database and internal message representation are designed so that this can be added
@@ -102,12 +121,10 @@ so a pipe gets clean text without the caller having to ask.
 5. Eventually this system should be usable as a library and support async requests to allow many API calls to happen concurrently.
     We want these async requests to simultaneously not complicate the code too much and not slow down the CLI interface where time to first token is critical.
 
-6. We want to be able collect statistics about provider/mode runtime performance and frequency of use.
-    These should be displayable as additional debug info in stderr and collected in q sqlite db for longterm tracking of performance over time.
-
-7. Color already follows `$DIC_COLOR`, `$NO_COLOR` and isatty, and the cost summary is
-    printed only to a terminal.  What remains is graded verbosity levels for stderr,
-    controllable by a flag, with different defaults for tty and pipe/redirection.
+6. The `stats` view has no notion of a percentile, only averages and maxima,
+    because sqlite has no `percentile()` without an extension.
+    A median is expressible with a window function over the view and should replace
+    `avg` once the query is worth the length.
 
 **OUT OF SCOPE:**
 
@@ -141,11 +158,18 @@ The messages table has the following columns:
 - `response`: the plain text of the API response, as streamed to stdout
 - `response_raw`: the provider's own JSON content blocks for the assistant turn, stored verbatim
 - `prev_mid`: (default NULL) previous `mid` if the conversation is multi-turn; importantly, two messages can share the same `prev_mid`, so the structure forms a tree and not a linked list
-- `time`: the unix time that the message was sent
 - `attachments`: a list of indexes into the attachments table
 - `model_id`: the `model_id` used to generate the response
 - `api_type`: the wire protocol used to generate the response (see "Model configuration")
+- `status`, `error`: the HTTP status of the call and the server's message when it was not 200
 - `tokens_input`, `tokens_output`: token counts reported by the API, if any
+- `tokens_reasoning`: tokens billed but never printed, if the API reports them;
+  without this a thinking model's tokens/second is wrong
+- `t_start`, `t_connect`, `t_request`, `t_headers`, `t_first`, `t_last`, `t_done`:
+  nanoseconds since the epoch at each phase boundary of the call (see "Timing")
+
+There is no `time` column: it is `t_start / 1000000000`, and a value that is a
+function of another value is not stored.
 
 There must be an index on `prev_mid`, since reconstructing a conversation walks the tree upwards.
 
@@ -155,6 +179,59 @@ This is why both `response` and `response_raw` are stored:
 `response` is what a human wants to read, but `response_raw` is what must be sent back to the API,
 and it may contain blocks (reasoning blocks, signatures, tool calls) that `dic` does not itself understand.
 `dic` must be able to replay these blocks without understanding them.
+
+## Timing and statistics
+
+`dic` stores *instants*, never durations: every metric anyone has asked for is the
+difference of two of them, and subtraction is sqlite's job.
+
+| column | taken |
+| ------ | ----- |
+| `t_start`   | the first line of `dic.py`, before every import but `time` |
+| `t_connect` | TCP and TLS established |
+| `t_request` | the request body has been written |
+| `t_headers` | the response headers have arrived |
+| `t_first`   | the first event carrying text |
+| `t_last`    | the stream closed |
+| `t_done`    | the row is written, immediately before exit |
+
+So "time to first API call" — `dic`'s own overhead, including the interpreter, the
+config query, the history query and whichever adaptor was imported — is
+`t_request - t_start`, and it will show the cost of a tool loop or a slow adaptor
+when those exist.  Time to first token is `t_first - t_start`, generation rate is
+`tokens_output / (t_last - t_first)`, and end of response is `t_last - t_start`.
+
+A failed call is stored too, with its `status` and `error` and an empty `response`,
+so that an error rate is countable and a provider's failures do not silently vanish.
+The session pointer is *not* moved on failure, so a failed row is always a leaf and
+is never replayed into a later conversation.
+
+### The stats view
+
+Nothing derived is materialized.  A `stats` view names each duration, in
+milliseconds, and each rate:
+
+```sql
+CREATE VIEW stats AS SELECT
+    mid, model_id, api_type, status,
+    substr(model_id, 1, instr(model_id || '+', '+') - 1) AS provider,
+    t_start / 1000000000 AS time,
+    (t_request - t_start) / 1e6 AS ms_overhead,
+    (t_first   - t_start) / 1e6 AS ms_ttft,
+    ...
+  FROM messages;
+```
+
+`dic --stats` is then a single `GROUP BY model_id` over that view: frequency of use
+(`count(*)`) and runtime performance (`avg(ms_ttft)`, `avg(tok_per_sec)`, ...) are
+the same aggregate over the same rows, so they are one query, with averages
+restricted to `status = 200`.  Python joins the resulting cells with tabs and
+computes nothing; the output is therefore already `sort`- and `awk`-shaped.
+This query scans `messages` and will grow slower with the table, which is
+acceptable: `--stats` is never on the latency path.
+
+Grouping by `provider` instead, or filtering by `time`, is a matter of editing the
+one query — which is why the view stores the parts rather than the answers.
 
 The `dic` tool also accepts a `-c` flag to continue the previous conversation.
 In `llm`, the `-c` flag is global, and so if you use the `llm` tool in two separate terminal bash sessions, they will follow the same conversation.

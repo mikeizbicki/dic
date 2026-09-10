@@ -26,13 +26,40 @@ CREATE TABLE IF NOT EXISTS messages (
     response TEXT,
     response_raw TEXT,
     prev_mid TEXT,
-    time INTEGER,
     attachments TEXT,
     model_id TEXT,
     api_type TEXT,
+    status INTEGER,              -- HTTP status, NULL if we never got one
+    error TEXT,                  -- the server's body when status <> 200
     tokens_input INTEGER,
-    tokens_output INTEGER);
+    tokens_output INTEGER,
+    tokens_reasoning INTEGER,    -- billed but unprinted; tok/s needs it
+    t_start INTEGER,             -- ns, before any import but `time`
+    t_connect INTEGER,           -- TCP+TLS up
+    t_request INTEGER,           -- request body written: end of our overhead
+    t_headers INTEGER,           -- response headers in: queue + prefill start
+    t_first INTEGER,             -- first token printed
+    t_last INTEGER,              -- stream closed
+    t_done INTEGER);             -- row written, just before exit
 CREATE INDEX IF NOT EXISTS messages_prev_mid ON messages(prev_mid);
+-- Every derived number is a subtraction of two stored instants, so the view
+-- is a view: nothing is materialized, nothing can go stale, and no python
+-- computes a statistic.  A provider is the head of the model_id chain.
+CREATE VIEW IF NOT EXISTS stats AS SELECT
+    mid, model_id, api_type, status,
+    substr(model_id, 1, instr(model_id || '+', '+') - 1) AS provider,
+    t_start / 1000000000 AS time,
+    (t_connect - t_start)  / 1e6 AS ms_connect,
+    (t_request - t_start)  / 1e6 AS ms_overhead,
+    (t_headers - t_request)/ 1e6 AS ms_wait,
+    (t_first   - t_start)  / 1e6 AS ms_ttft,
+    (t_last    - t_first)  / 1e6 AS ms_stream,
+    (t_done    - t_last)   / 1e6 AS ms_teardown,
+    (t_done    - t_start)  / 1e6 AS ms_total,
+    tokens_input, tokens_output, tokens_reasoning,
+    1e9 * (tokens_output + coalesce(tokens_reasoning, 0))
+        / nullif(t_last - t_first, 0) AS tok_per_sec
+  FROM messages;
 CREATE TABLE IF NOT EXISTS attachments (
     aid TEXT PRIMARY KEY,
     path TEXT,
@@ -51,6 +78,21 @@ CREATE TABLE IF NOT EXISTS config_meta (
     path TEXT PRIMARY KEY,
     mtime INTEGER,
     size INTEGER);
+"""
+
+# What `dic --stats` prints: usage frequency and runtime performance are the
+# same aggregate over the same rows, so they are one query.  Averages ignore
+# failed calls, which are counted separately.
+STATS = """
+SELECT model_id, count(*) AS n, sum(status <> 200) AS errors,
+       round(avg(ms_overhead) FILTER (WHERE status = 200), 1) AS overhead,
+       round(avg(ms_wait)     FILTER (WHERE status = 200), 1) AS wait,
+       round(avg(ms_ttft)     FILTER (WHERE status = 200), 1) AS ttft,
+       round(max(ms_ttft)     FILTER (WHERE status = 200), 1) AS ttft_max,
+       round(avg(tok_per_sec) FILTER (WHERE status = 200), 1) AS tok_s,
+       round(avg(ms_total)    FILTER (WHERE status = 200), 1) AS total,
+       sum(tokens_input) AS tin, sum(tokens_output) AS tout
+  FROM stats GROUP BY model_id ORDER BY n DESC
 """
 
 BLUE = "\033[38;5;39m"       # model output
@@ -78,6 +120,21 @@ def die(msg):
     msg = "dic: %s\n" % msg
     sys.stderr.write(RED + msg + RESET if colored(sys.stderr) else msg)
     sys.exit(1)
+
+
+def report(verbosity, level, msg):
+    """Write msg to stderr in orange when verbosity has reached level.
+
+    All of dic's stderr goes through here, so colour policy and verbosity
+    policy are each stated exactly once.
+
+    >>> report(0, 1, "not printed")
+    """
+    if verbosity < level:
+        return
+    msg = msg + "\\n"
+    sys.stderr.write(ORANGE + msg + RESET if colored(sys.stderr) else msg)
+    sys.stderr.flush()
 
 
 B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
