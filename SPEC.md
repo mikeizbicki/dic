@@ -1,11 +1,12 @@
 # dic SPEC
 
 `dic` is a minimalist CLI tool for working with chat LLMs models.
-It is part of the `fac` suite of tools, which all use Latin-based names for different AI tasks.
+It is part of the `fac` suite of tools,
+which all use Latin-based names for different AI tasks.
 (The idea is that working with AIs is like working with demons and magic,
 and Latin is the traditional language for controlling demons and casting spells.)
 
-`dic` is similar to simonw's `llm` tool but with an emphasis on speed and composability.
+`dic` is similar to simonw's `llm` tool but with an emphasis on speed and Unix-style composability.
 
 ## Code Priorities
 

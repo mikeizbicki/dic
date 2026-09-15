@@ -29,51 +29,28 @@
     "api_key_name": "OPENAI_API_KEY"
   },
 
-  "local": {
-    "abstract": true,
-    "api_base": "http://localhost:8080/v1",
-    "api_key_name": "LOCAL_API_KEY"
-  },
-
   "thinking-high": {
     "abstract": true,
     "options": {"thinking": {"type": "enabled", "budget_tokens": 8000}}
   },
 
   "cerebras+qwen": {
-    "model_name": "qwen-3.8-27b",
-    "cost_input": 0.0,
-    "cost_output": 0.0
+    "model_name": "qwen-3.8-27b"
   },
 
   "groq+qwen": {
     "model_name": "qwen/qwen3.8-27b",
     "alias": "qwen",
-    "cost_input": 0.0,
-    "cost_output": 0.0,
-    "options": {"max_tokens": 200}
+    "options": {"max_tokens": 800}
   },
 
-  "anthropic+fable": {
-    "model_name": "claude-fable-5-1",
-    "alias": "fable",
-    "cost_input": 10.0,
-    "cost_output": 50.0
-  },
+  "anthropic+fable":  {"model_name": "claude-fable-5-1",  "cost_input": 10.0,  "cost_output": 50.0},
+  "anthropic+opus":   {"model_name": "claude-opus-5",     "cost_input":  5.0,  "cost_output": 25.0},
+  "anthropic+sonnet": {"model_name": "claude-sonnet-5",   "cost_input":  2.0,  "cost_output": 10.0},
+  "anthropic+haiku":  {"model_name": "claude-haiku-4-5",  "cost_input":  1.0,  "cost_output":  5.0},
 
-  "anthropic+sonnet": {
-    "model_name": "claude-sonnet-4-5",
-    "alias": "sonnet",
-    "options": {"max_tokens": 8192}
-  },
-
-  "openai+gpt": {
-    "model_name": "gpt-4.1",
-    "alias": "gpt"
-  },
-
-  "local+model": {
-    "model_name": "local-model",
-    "api_type": "openai-chat"
-  }
+  "openai+astra":     {"model_name": "gpt-6-astra",       "cost_input": 10.00, "cost_output": 50.00 },
+  "openai+sol":       {"model_name": "gpt-5.6-sol",       "cost_input":  4.00, "cost_output": 20.00 },
+  "openai+terra":     {"model_name": "gpt-5.6-terra",     "cost_input":  2.00, "cost_output": 12.00 },
+  "openai+luna":      {"model_name": "gpt-5.6-luna",      "cost_input":  0.20, "cost_output":  1.20 }
 }
