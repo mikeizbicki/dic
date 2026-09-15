@@ -236,22 +236,26 @@ def main():
            f"POST {model['api_base']}{adaptor.PATH} {json.dumps(body)}")
     color = use_color(sys.stdout)
     stamps = {"t_start": T0, "status": None, "error": None}
-    acc, chunks, painted = {}, [], False
+    styles = {"": BLUE, "thinking": THINKING}
+    acc, chunks, painted = {}, [], None
     for event in events(model["api_base"], adaptor.PATH, headers, body, stamps):
-        text = adaptor.parse(event, acc)
-        if text:
-            stamps.setdefault("t_first", time.time_ns())
+        text, kind = adaptor.parse(event, acc)
+        if not text:
+            continue
+        stamps.setdefault("t_first", time.time_ns())
+        if kind != "thinking":     # "response" is the answer, never the reasoning
             chunks.append(text)
-            if not args.extract:
-                if color and not painted:
-                    sys.stdout.write(BLUE)
-                    painted = True
-                sys.stdout.write(text)
-                sys.stdout.flush()
+        if not args.extract:
+            if color and painted != kind:
+                sys.stdout.write((RESET if painted is not None else "")
+                                 + styles[kind])
+                painted = kind
+            sys.stdout.write(text)
+            sys.stdout.flush()
     stamps["t_last"] = time.time_ns()
     response = "".join(chunks)
     if not args.extract:
-        if painted:
+        if painted is not None:
             sys.stdout.write(RESET)
         if response and not response.endswith("\n"):
             sys.stdout.write("\n")

@@ -98,6 +98,7 @@ SELECT model_id, count(*) AS n, sum(status <> 200) AS errors,
 BLUE = "\033[38;5;39m"       # model output
 ORANGE = "\033[38;5;208m"    # the cost summary
 RED = "\033[31m"             # errors
+THINKING = "\033[38;5;239;48;5;252m"   # reasoning, on a light gray background
 RESET = "\033[0m"
 
 

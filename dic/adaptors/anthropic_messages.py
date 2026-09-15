@@ -56,7 +56,10 @@ def build(model, turns, system, params):
 
 
 def parse(event, acc):
-    """Rebuild acc["raw"] from the event stream; only text deltas are printed.
+    """Rebuild acc["raw"] from the event stream, yielding (text, kind) to print.
+
+    kind is "thinking" for a reasoning delta and "" for anything else, so the
+    caller can paint thinking differently from the answer.
 
     Unknown block types accumulate as-is, so a feature dic has never heard of
     still round-trips into the database and back to the API.
@@ -64,17 +67,24 @@ def parse(event, acc):
     >>> acc = {}
     >>> parse({"type": "message_start",
     ...        "message": {"usage": {"input_tokens": 5, "output_tokens": 0}}}, acc)
-    ''
+    ('', '')
     >>> parse({"type": "content_block_start",
     ...        "content_block": {"type": "text", "text": ""}}, acc)
-    ''
+    ('', '')
     >>> parse({"type": "content_block_delta",
     ...        "delta": {"type": "text_delta", "text": "hi"}}, acc)
-    'hi'
+    ('hi', '')
     >>> parse({"type": "message_delta", "usage": {"output_tokens": 1}}, acc)
-    ''
+    ('', '')
     >>> acc["usage"], acc["raw"]
     ((5, 1), [{'type': 'text', 'text': 'hi'}])
+    >>> acc = {}
+    >>> parse({"type": "content_block_start",
+    ...        "content_block": {"type": "thinking", "thinking": ""}}, acc)
+    ('', '')
+    >>> parse({"type": "content_block_delta",
+    ...        "delta": {"type": "thinking_delta", "thinking": "hmm"}}, acc)
+    ('hmm', 'thinking')
     """
     kind = event.get("type")
     blocks = acc.setdefault("raw", [])
@@ -90,7 +100,7 @@ def parse(event, acc):
                                   ("signature", "signature_delta")):
             if delta.get("type") == delta_type:
                 block[field] = block.get(field, "") + delta[field]
-                return delta[field] if field == "text" else ""
+                return delta[field], "thinking" if field == "thinking" else ""
         if delta.get("type") == "input_json_delta":
             block["_json"] = block.get("_json", "") + delta["partial_json"]
     elif kind == "content_block_stop" and blocks:
@@ -101,7 +111,7 @@ def parse(event, acc):
         usage = event.get("usage") or {}
         acc["usage"] = (acc.get("usage", (None, None))[0],
                         usage.get("output_tokens"))
-    return ""
+    return "", ""
 
 
 def finish(acc):

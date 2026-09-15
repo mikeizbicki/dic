@@ -53,25 +53,33 @@ def build(model, turns, system, params):
 def parse(event, acc):
     """Text deltas print; the terminal event carries the output list and usage.
 
+    Returns (text, kind), where reasoning-summary deltas are tagged "thinking"
+    so the caller can paint them differently from the answer.
+
     >>> acc = {}
     >>> parse({"type": "response.output_text.delta", "delta": "hi"}, acc)
-    'hi'
+    ('hi', '')
+    >>> parse({"type": "response.reasoning_summary_text.delta", "delta": "hmm"}, acc)
+    ('hmm', 'thinking')
     >>> parse({"type": "response.completed", "response":
     ...        {"output": [{"type": "message"}],
     ...         "usage": {"input_tokens": 2, "output_tokens": 1}}}, acc)
-    ''
+    ('', '')
     >>> acc["usage"], acc["raw"]
     ((2, 1), [{'type': 'message'}])
     """
     kind = event.get("type")
+    if kind in ("response.reasoning_summary_text.delta",
+                "response.reasoning_text.delta"):
+        return event.get("delta") or "", "thinking"
     if kind == "response.output_text.delta":
-        return event.get("delta") or ""
+        return event.get("delta") or "", ""
     if kind in ("response.completed", "response.incomplete", "response.failed"):
         resp = event.get("response") or {}
         acc["raw"] = resp.get("output") or []
         usage = resp.get("usage") or {}
         acc["usage"] = (usage.get("input_tokens"), usage.get("output_tokens"))
-    return ""
+    return "", ""
 
 
 def finish(acc):

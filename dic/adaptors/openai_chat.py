@@ -6,7 +6,7 @@ Every adaptor module exports the same five names:
     PATH            the path appended to the model's api_base
     auth(key)       headers carrying the API key
     build(...)      IR turns -> request body
-    parse(event, acc)  one SSE event -> text to print, state accumulated in acc
+    parse(event, acc)  one SSE event -> (text, kind) to print, state in acc
     finish(acc)     acc -> the JSON stored in messages.response_raw
 """
 from store import data_url
@@ -59,25 +59,38 @@ def build(model, turns, system, params):
 
 
 def parse(event, acc):
-    """Return the text of one delta event and record usage when it appears.
+    """Return the (text, kind) of one delta event and record usage when it appears.
+
+    Reasoning deltas -- DeepSeek, vLLM, OpenRouter and friends put them in
+    delta.reasoning_content -- come back tagged "thinking" so the caller can
+    paint them differently from the answer, and are kept out of the assistant
+    message that is replayed next turn.
 
     >>> acc = {}
     >>> parse({"choices": [{"delta": {"content": "hi"}}]}, acc)
-    'hi'
+    ('hi', '')
+    >>> parse({"choices": [{"delta": {"reasoning_content": "hmm"}}]}, acc)
+    ('hmm', 'thinking')
     >>> parse({"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 1}}, acc)
-    ''
+    ('', '')
     >>> acc["usage"]
     (3, 1)
     """
     usage = event.get("usage")
     if usage:
         acc["usage"] = (usage.get("prompt_tokens"), usage.get("completion_tokens"))
-    text = ""
+    text, kind = "", ""
     for choice in event.get("choices") or []:
-        text += (choice.get("delta") or {}).get("content") or ""
-    if text:
+        delta = choice.get("delta") or {}
+        if delta.get("content"):
+            text += delta["content"]
+        else:
+            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+            if reasoning:
+                text, kind = text + reasoning, "thinking"
+    if text and kind != "thinking":
         acc.setdefault("text", []).append(text)
-    return text
+    return text, kind
 
 
 def finish(acc):
