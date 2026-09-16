@@ -21,7 +21,7 @@ if HERE not in sys.path:          # so `store` and `adaptors.*` resolve whether
     sys.path.insert(0, HERE)      # we are run as a script or as `-m dic.dic`
 
 import config
-from store import (BLUE, CONFIG_DIR, RESET, STATS, db, die, history,
+from store import (BLUE, THINKING, CONFIG_DIR, RESET, STATS, db, die, history,
                    normalize, report, session_read, session_write, store_attachment,
                    turns_from_rows, ulid, use_color)
 
