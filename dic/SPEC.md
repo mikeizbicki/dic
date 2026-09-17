@@ -131,13 +131,13 @@ All of it goes through one `report(verbosity, level, msg)` in `store.py`.
 
 **OUT OF SCOPE:**
 
-1. The `llm` command provides tools for dynamically building the prompt (for example using "fragments" or "prompt templates").
+1. The `llm` command provides mechanisms for dynamically building the prompt (for example using "fragments" or "prompt templates").
     `dic` will never implement these features;
     they should instead live in separate programs that can be used to generate interesting prompts,
     and then have those prompts passed into `dic`.
 
-1. The `llm` command provides tools for working with non-chat models (e.g. embedding models).
-    These non-chat models should be provided separate stand alone tools.
+1. The `llm` command provides mechanisms for working with non-chat models (e.g. embedding models).
+    These non-chat models should be provided separate stand alone programs.
 
 1. `llm` uses a plugin per provider, which means that a newly released model cannot be used
     until its plugin has been updated, and that plugin load times dominate startup.
@@ -174,7 +174,7 @@ function of another value is not stored.
 
 There must be an index on `prev_mid`, since reconstructing a conversation walks the tree upwards.
 
-The `dic` tool accepts a `--mid` flag which allows continuing the conversation from any previous message,
+`dic` accepts a `--mid` flag which allows continuing the conversation from any previous message,
 and so the `messages` table must contain all information needed to ensure that the conversation can be reconstructed in the future.
 This is why both `response` and `response_raw` are stored:
 `response` is what a human wants to read, but `response_raw` is what must be sent back to the API,
