@@ -43,7 +43,7 @@ function geni() {
     # if available, we use `dic`; otherwise we use `llm`.
     if command -v dic >/dev/null 2>&1; then
         llm_command=dic
-    elif command -v dic >/dev/null 2>&1; then
+    elif command -v llm >/dev/null 2>&1; then
         llm_command=llm
     else
         echo "geni-error: neither dic nor llm installed" >&2
