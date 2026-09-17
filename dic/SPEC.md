@@ -1,10 +1,10 @@
 # dic SPEC
 
 `dic` is a minimalist CLI tool for working with chat LLMs models.
-It is part of the `fac` suite of tools,
-which all use Latin-based names for different AI tasks.
-(The idea is that working with AIs is like working with demons and magic,
-and Latin is the traditional language for controlling demons and casting spells.)
+
+"Dic" is Latin for the command "speak".
+The idea is that working with AIs is like working with demons and magic,
+and Latin is the traditional language for controlling demons and casting spells.
 
 `dic` is similar to simonw's `llm` tool but with an emphasis on speed and Unix-style composability.
 
@@ -137,9 +137,7 @@ All of it goes through one `report(verbosity, level, msg)` in `store.py`.
     and then have those prompts passed into `dic`.
 
 1. The `llm` command provides tools for working with non-chat models (e.g. embedding models).
-    `dic` is part of a suite of latin-named tools called `fac`,
-    and these other model types are implemented in other tools.
-    `dic` is only for chat models.
+    These non-chat models should be provided separate stand alone tools.
 
 1. `llm` uses a plugin per provider, which means that a newly released model cannot be used
     until its plugin has been updated, and that plugin load times dominate startup.
