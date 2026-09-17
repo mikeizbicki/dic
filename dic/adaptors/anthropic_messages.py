@@ -100,6 +100,8 @@ def parse(event, acc):
                                   ("signature", "signature_delta")):
             if delta.get("type") == delta_type:
                 block[field] = block.get(field, "") + delta[field]
+                if field == "signature":
+                    return "", ""          # opaque; replayed, never printed
                 return delta[field], "thinking" if field == "thinking" else ""
         if delta.get("type") == "input_json_delta":
             block["_json"] = block.get("_json", "") + delta["partial_json"]

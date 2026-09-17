@@ -243,8 +243,14 @@ def main():
         if not text:
             continue
         stamps.setdefault("t_first", time.time_ns())
-        if kind != "thinking":     # "response" is the answer, never the reasoning
-            chunks.append(text)
+        if kind == "thinking":
+            if use_color(sys.stderr):
+                sys.stderr.write(THINKING + text + RESET)
+            else:
+                sys.stderr.write(text)
+            sys.stderr.flush()
+            continue
+        chunks.append(text)
         if not args.extract:
             if color and painted != kind:
                 sys.stdout.write((RESET if painted is not None else "")
