@@ -4,12 +4,7 @@
 # and how AI coding agents work.
 
 function geni() {
-
-    ####################
-    # STEP 1: sanity check the git repo
-    ####################
-    # `git am` refuses to run if the working tree or index is dirty,
-    # so we check up front to give a clearer error message.
+    # only allow geni to run if the repo is clean
     if ! git rev-parse --git-dir >/dev/null 2>&1; then
         echo "geni-error: not inside a git repository" >&2
         return 1
@@ -23,22 +18,23 @@ function geni() {
         return 1
     fi
 
-    ####################
-    # STEP 2: set up a place to stash intermediate files
-    ####################
+    # generate and apply the patch
+    geni-genpatch
+    geni-apply
+}
+
+function geni-patchfile() {
+    # Output the absolute path to the temporary file that will store the patch.
     # Everything goes under .git/.geni so it survives across invocations
     # and can be inspected when debugging a failed patch.
     # `git rev-parse --git-dir` works even from subdirectories of the repo.
     local geni_dir
     geni_dir="$(git rev-parse --git-dir)/.geni"
     mkdir -p "$geni_dir"
+    echo "$geni_dir/raw"
+}
 
-    local raw_file="$geni_dir/raw"
-
-    ####################
-    # STEP 3: invoke the llm
-    ####################
-
+function geni-genpatch() {
     # `dic` is a more efficient version of simonw's `llm` command;
     # if available, we use `dic`; otherwise we use `llm`.
     if command -v dic >/dev/null 2>&1; then
@@ -50,28 +46,30 @@ function geni() {
         return 1
     fi
 
-    # We pass the user's request as positional args to llm.
+    # We pass the user's request as positional args to llm_command.
     # Use a subshell so `set -o pipefail` doesn't leak into the caller's shell.
     if ! (
         set -o pipefail
-        $llm_command -s "$(geni_prompt)" "$@" |\
-            pv -N 'downloading llm output' -btr > "$raw_file"
+        $llm_command -s "$(geni-prompt)" "$@" |\
+            pv -N 'downloading llm output' -btr > "$(geni-patchfile)"
     ); then
         echo "geni-error: $llm_command failed" >&2
         return 1
     fi
+}
 
-    ####################
-    # STEP 4: apply the patch
-    ####################
+function geni-apply() {
+    local patch_file=$(geni-patchfile)
+
     # We directly run `git apply` on the output of the llm.
     # `git apply` ignores any text before the first "diff --git" line,
     # so the commit message above the patch is skipped over.
     # Finally, it either fully succeeds or leaves the tree untouched.
     # So on error, the repo remains exactly as if nothing had happened.
-    if ! git apply --index --recount --ignore-whitespace "$raw_file"; then
+    if ! git apply --index --recount --ignore-whitespace "$patch_file"; then
         echo "geni-error: git apply failed to apply the patch" >&2
-        echo "geni-hint: inspect the raw patch at: $raw_file" >&2
+        echo "geni-hint: fix the raw patch at: $patch_file" >&2
+        echo "geni-hint: after fixing, rerun geni-apply" >&2
         return 1
     fi
 
@@ -79,24 +77,20 @@ function geni() {
     # We tag the commits by modifying the subject with [geni]
     # and setting the committer fields.
     local commit_message
-    commit_message="[geni] $(sed '/^diff --git/,$d' "$raw_file")"
+    commit_message="[geni] $(sed '/^diff --git/,$d' "$patch_file")"
     if ! GIT_COMMITTER_NAME='geni' GIT_COMMITTER_EMAIL='geni@agent' git commit --quiet -m "$commit_message"; then
         echo "geni-error: git commit failed" >&2
         return 1
     fi
 
-    ####################
-    # STEP 5: success
-    ####################
     # Show a short summary of the commit we just made.
     git show HEAD --stat --format='%h %s'
 }
 
-
-# geni_prompt is a global function so that the user can always
+# geni-prompt is a global function so that the user can always
 # call the function to inspect the contents of the system prompt.
 # It should be side-effect free.
-function geni_prompt() {
+function geni-prompt() {
     cat <<EOF
 You are a coding agent. The user will describe a change they want made to
 a git repository. You must respond with a commit message (Tim Pope style)
@@ -140,78 +134,4 @@ Use the following information to help you write the code:
 $ git ls-files
 $(git ls-files)
 EOF
-}
-
-
-# geni_tee streams the llm output through to stdout while printing a
-# human-readable progress indicator to stderr. It is adapted from the
-# yaml-oriented version in shell/geni.sh to instead understand the
-# unified-diff / mbox format that this version of geni uses.
-function geni_tee() {
-    printf "${__ORANGE}request sent... " >&2
-
-    local first_line=true
-    local output=""
-    local current_path=""
-    local in_hunk=false
-    local line_counter=0
-
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        if [[ "$first_line" == true ]]; then
-            printf "receiving..." >&2
-            first_line=false
-        fi
-
-        output+="$line"$'\n'
-
-        # NOTE:
-        # the code below "dynamically parses" the unified diff output;
-        # it is not fully correct, but is close enough for a progress display.
-        # we do not use a full diff parser because we want to stream the
-        # progress as the data arrives. Any misparse here affects only the
-        # progress indicator, not the final patch that gets applied.
-
-        # Detect a new file in the diff: "diff --git a/foo b/foo"
-        if [[ "$line" =~ ^diff\ --git\ a/(.+)\ b/(.+)$ ]]; then
-            current_path="${BASH_REMATCH[2]}"
-            in_hunk=false
-            line_counter=0
-            continue
-        fi
-
-        # Detect a new-file marker: "--- /dev/null" on the previous-style line
-        # means the next +++ b/path is a brand new file.
-        if [[ "$line" =~ ^\+\+\+\ b/(.+)$ ]]; then
-            current_path="${BASH_REMATCH[1]}"
-            continue
-        fi
-
-        # Detect "new file mode" marker -> announce a full new file
-        if [[ "$line" =~ ^new\ file\ mode ]]; then
-            printf " $current_path(new)..." >&2
-            in_hunk=false
-            line_counter=0
-            continue
-        fi
-
-        # Detect a hunk header: "@@ -1,2 +1,3 @@"
-        if [[ "$line" =~ ^@@ ]]; then
-            if [[ "$in_hunk" == false && -n "$current_path" ]]; then
-                printf " $current_path(patch)..." >&2
-            fi
-            in_hunk=true
-            line_counter=0
-            continue
-        fi
-
-        # Print a dot every 10 lines while we're inside a hunk / file body.
-        if [[ -n "$current_path" ]]; then
-            ((line_counter++))
-            if (( line_counter % 10 == 0 )); then
-                printf "." >&2
-            fi
-        fi
-    done
-    printf "\n" >&2
-    printf '%s' "$output"
 }
