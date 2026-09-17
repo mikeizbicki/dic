@@ -19,7 +19,7 @@ function geni() {
     fi
 
     # generate and apply the patch
-    geni-genpatch
+    geni-mkpatch "$@"
     geni-apply
 }
 
@@ -28,13 +28,10 @@ function geni-patchfile() {
     # Everything goes under .git/.geni so it survives across invocations
     # and can be inspected when debugging a failed patch.
     # `git rev-parse --git-dir` works even from subdirectories of the repo.
-    local geni_dir
-    geni_dir="$(git rev-parse --git-dir)/.geni"
-    mkdir -p "$geni_dir"
-    echo "$geni_dir/raw"
+    echo "$(git rev-parse --git-dir)/.geni-patchfile"
 }
 
-function geni-genpatch() {
+function geni-mkpatch() {
     # `dic` is a more efficient version of simonw's `llm` command;
     # if available, we use `dic`; otherwise we use `llm`.
     if command -v dic >/dev/null 2>&1; then
@@ -87,13 +84,13 @@ function geni-apply() {
     git show HEAD --stat --format='%h %s'
 }
 
-# geni-prompt is a global function so that the user can always
-# call the function to inspect the contents of the system prompt.
-# It should be side-effect free.
 function geni-prompt() {
+    # Print the system prompt used by geni.
+    # It is a global function so that users can always run it to inspect the prompt.
+    # All commands used in constructing the prompt must be side effect free.
     cat <<EOF
-You are a coding agent. The user will describe a change they want made to
-a git repository. You must respond with a commit message (Tim Pope style)
+You are a coding agent. The user describes a change they want made to
+a git repository. You respond with a commit message (Tim Pope style)
 followed by a patch (and nothing else).  Here is an example:
 
 \`\`\`
@@ -112,10 +109,10 @@ diff --git a/path/to/file b/path/to/file
 \`\`\`
 
 Rules:
-- Do NOT wrap your response in markdown code fences.
-- Do NOT include any prose before or after the patch.
-- The first line of your response MUST begin with the commit message.
-    - Do not output any reasoning, explanation, or whitespace before it.
+- No other content.
+    - Do NOT wrap your response in markdown code fences.
+    - Do NOT include any prose before or after the patch.
+    - The first line of your response MUST be the commit message.
 - Use standard unified diff syntax with '--- a/...' and '+++ b/...' headers.
 - For new files use '--- /dev/null' and '+++ b/path'.
     - You must also specify the mode of the new file
