@@ -47,8 +47,8 @@ function geni-mkpatch() {
     # Use a subshell so `set -o pipefail` doesn't leak into the caller's shell.
     if ! (
         set -o pipefail
-        $llm_command -s "$(geni-prompt)" "$@" |\
-            pv -N 'downloading llm output' -btr > "$(geni-patchfile)"
+        $llm_command -s "$(geni-prompt)" "$@" --trace=never |\
+            pv -N patch -btr > "$(geni-patchfile)"
     ); then
         echo "geni-error: $llm_command failed" >&2
         return 1
