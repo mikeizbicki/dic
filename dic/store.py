@@ -138,6 +138,44 @@ def report(verbosity, level, msg):
     sys.stderr.flush()
 
 
+def pv_bytes(n):
+    """A byte count as pv prints it: the number, then the unit in three columns.
+
+    >>> pv_bytes(58), pv_bytes(2048)
+    ('58.0  B', '2.0KiB')
+    """
+    value, unit = float(n), "B"
+    for bigger in ("KiB", "MiB", "GiB", "TiB"):
+        if value < 1024:
+            break
+        value, unit = value / 1024, bigger
+    return f"{value:.1f}{unit:>3}"
+
+
+def pv_clock(seconds):
+    """H:MM:SS, as pv -t prints it.
+
+    >>> pv_clock(64.7)
+    '0:01:04'
+    """
+    whole = int(seconds)
+    return f"{whole // 3600}:{whole // 60 % 60:02d}:{whole % 60:02d}"
+
+
+def pv_line(name, nbytes, seconds):
+    """One `pv -N name -btr` status line.
+
+    Used for the reasoning stream, which is progress and not content: the
+    meter says how much a model thought without scrolling its answer away.
+
+    >>> pv_line("thinking", 58, 4.0)
+    'thinking: 58.0  B 0:00:04 [14.5  B/s]'
+    """
+    rate = nbytes / seconds if seconds else 0
+    return (f"{name}: {pv_bytes(nbytes)} {pv_clock(seconds)}"
+            f" [{pv_bytes(rate)}/s]")
+
+
 B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 

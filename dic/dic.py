@@ -22,8 +22,8 @@ if HERE not in sys.path:          # so `store` and `adaptors.*` resolve whether
 
 import config
 from store import (BLUE, THINKING, CONFIG_DIR, RESET, STATS, db, die, history,
-                   normalize, report, session_read, session_write, store_attachment,
-                   turns_from_rows, ulid, use_color)
+                   normalize, pv_line, report, session_read, session_write,
+                   store_attachment, turns_from_rows, ulid, use_color)
 
 ADAPTER_DIR = os.path.join(CONFIG_DIR, "adapters")
 
@@ -87,6 +87,34 @@ def extract(text):
     """
     match = re.search(r"```[^\n]*\n(.*?)```", text, re.S)
     return match.group(1) if match else text
+
+
+def pv_update(state, text=None, final=False):
+    """Repaint the one-line `pv -N thinking -btr` meter on stderr.
+
+    text adds its bytes to the meter, creating it on the first call; final
+    closes the line so the finished meter stays visible above the answer.
+    A run with no reasoning at all therefore writes nothing, and repaints
+    are capped at ten a second so a fast stream is not spent on escape codes.
+    """
+    if state.get("done"):
+        return
+    now = time.time_ns()
+    if text is not None:
+        state["bytes"] = state.get("bytes", 0) + len(text.encode())
+        state.setdefault("t0", now)
+    if "t0" not in state:
+        return
+    if not final and now - state.get("t_paint", 0) < 10 ** 8:
+        return
+    state["t_paint"] = now
+    line = pv_line("thinking", state["bytes"], (now - state["t0"]) / 1e9)
+    sys.stderr.write("\r" + (THINKING + line + RESET
+                             if use_color(sys.stderr) else line))
+    if final:
+        sys.stderr.write("\n")
+        state["done"] = True
+    sys.stderr.flush()
 
 
 def options(model, overrides):
@@ -156,6 +184,8 @@ def main():
                         metavar="KEY=VALUE", help="override a model option")
     parser.add_argument("-x", "--extract", action="store_true")
     parser.add_argument("-c", "--continue", dest="cont", action="store_true")
+    parser.add_argument("--pv-thinking", dest="pv_thinking", action="store_true",
+                        help="show reasoning as a one-line pv-style meter")
     parser.add_argument("-v", "--verbose", dest="v", action="count",
                         help="raise stderr verbosity; repeatable")
     parser.add_argument("-q", "--quiet", dest="v", action="store_const", const=0)
@@ -236,18 +266,24 @@ def main():
            f"POST {model['api_base']}{adaptor.PATH} {json.dumps(body)}")
     stamps = {"t_start": T0, "status": None, "error": None}
     acc, chunks, painted = {}, [], None
+    pv = {} if args.pv_thinking else None
     for event in events(model["api_base"], adaptor.PATH, headers, body, stamps):
         text, kind = adaptor.parse(event, acc)
         if not text:
             continue
         stamps.setdefault("t_first", time.time_ns())
         if kind == "thinking":
-            if use_color(sys.stderr):
+            if pv is not None:
+                pv_update(pv, text)
+            elif use_color(sys.stderr):
                 sys.stderr.write(THINKING + text + RESET)
             else:
                 sys.stderr.write(text)
-            sys.stderr.flush()
+            if pv is None:
+                sys.stderr.flush()
             continue
+        if pv is not None:      # the answer starts on a line of its own
+            pv_update(pv, final=True)
         chunks.append(text)
         if not args.extract:
             if use_color(sys.stdout) and painted != kind:
@@ -256,6 +292,8 @@ def main():
             sys.stdout.write(text)
             sys.stdout.flush()
     stamps["t_last"] = time.time_ns()
+    if pv is not None:          # a reply that was nothing but reasoning
+        pv_update(pv, final=True)
     response = "".join(chunks)
     if not args.extract:
         if painted is not None:
