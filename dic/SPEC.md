@@ -80,7 +80,8 @@ then the model's own `system` key.
 ### Color
 
 Every stream `dic` writes has a meaning and therefore a color:
-blue for model output, orange for the cost summary, red for errors.
+blue for model output, a faded gray for the model's reasoning,
+orange for the cost summary, red for errors.
 There is deliberately no uncolored terminal output.
 Color is emitted when `$DIC_COLOR` is `always`,
 suppressed when it is `never`,
