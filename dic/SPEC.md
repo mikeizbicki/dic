@@ -45,7 +45,8 @@ Whenever possible, names and semantics remain the same as simonw's `llm`.
 | `-x`       | `--extract`    | extracts first fenced code block |
 | `-c`       | `--continue`   | continue the previous conversation in this session |
 |            | `--mid`        | continue the conversation from the given message id |
-|            | `--pv-thinking` | show the reasoning stream as a one-line `pv`-style meter |
+|            | `--pv-thinking` | show the reasoning stream as a one-line `pv`-style meter (the default) |
+|            | `--no-pv-thinking` | stream the reasoning text itself instead |
 |            | `--aliases`    | print shell alias definitions for `dic.sh` to eval |
 |            | `--models`     | list the configured model ids |
 |            | `--stats`      | print per-model runtime and usage statistics |
@@ -93,8 +94,8 @@ so a pipe gets clean text without the caller having to ask.
 
 Reasoning is progress rather than content, and a thinking model can emit thousands
 of tokens that nobody reads and that push the answer off the screen.
-`--pv-thinking` therefore replaces the streamed reasoning text with a single status
-line on stderr in the format of `pv -N thinking -btr`:
+By default the reasoning text is therefore replaced with a single status line on
+stderr in the format of `pv -N thinking -btr`:
 
 ```
 thinking: 58.0  B 0:00:04 [16.5  B/s]
@@ -104,6 +105,18 @@ The line is repainted in place, in the same faded gray under the same color rule
 and is terminated by a newline when the first answer token arrives, so the answer
 starts on its own line and exactly one thinking line remains at exit.
 If the model never emitted reasoning, the line is never written at all.
+`--no-pv-thinking` streams the reasoning text itself instead.
+
+A slow first token looks exactly like a hung program, so while the meter is
+enabled and half a second has passed with nothing received, the same line carries
+a bare clock and keeps counting:
+
+```
+ttft: 0:00:03
+```
+
+It has no byte counter because no bytes have arrived; it is closed with the final
+time when the first token does arrive, and a faster call never shows it at all.
 
 ### Verbosity
 

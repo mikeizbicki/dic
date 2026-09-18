@@ -22,7 +22,7 @@ if HERE not in sys.path:          # so `store` and `adaptors.*` resolve whether
 
 import config
 from store import (BLUE, THINKING, CONFIG_DIR, RESET, STATS, db, die, history,
-                   normalize, pv_line, report, session_read, session_write,
+                   normalize, pv_clock, pv_line, report, session_read, session_write,
                    store_attachment, turns_from_rows, ulid, use_color)
 
 ADAPTER_DIR = os.path.join(CONFIG_DIR, "adapters")
@@ -89,6 +89,56 @@ def extract(text):
     return match.group(1) if match else text
 
 
+WAIT_DELAY = 0.5     # a first token faster than this needs no reassurance
+
+
+def pv_paint(state, line):
+    """Rewrite one status line in place on stderr, in the reasoning gray.
+
+    The line is padded to the widest one written so far, since a line that
+    shrinks would otherwise leave the tail of the previous one behind.
+    """
+    state["width"] = max(state.get("width", 0), len(line))
+    line = line.ljust(state["width"])
+    sys.stderr.write("\r" + (THINKING + line + RESET
+                             if use_color(sys.stderr) else line))
+    sys.stderr.flush()
+
+
+def pv_waiter():
+    """Tick a bare clock until the first token arrives; return its stopper.
+
+    A slow first token is indistinguishable from a hung program, so after
+    WAIT_DELAY seconds the line reads `ttft: 0:00:03` and keeps counting.
+    This needs a thread because the main thread is blocked in a socket read
+    until exactly the moment the clock should stop; the stopper joins it, so
+    only one of the two ever writes to stderr, and then closes the line with
+    the final time -- if the clock was ever shown at all.
+    """
+    import threading
+    state, start, stop = {}, time.time_ns(), threading.Event()
+
+    def seconds():
+        return (time.time_ns() - start) / 1e9
+
+    def tick():
+        while not stop.wait(0.1):
+            if seconds() >= WAIT_DELAY:
+                pv_paint(state, f"ttft: {pv_clock(seconds())}")
+
+    thread = threading.Thread(target=tick, daemon=True)
+    thread.start()
+
+    def stopper():
+        stop.set()
+        thread.join()
+        if state.get("width"):
+            pv_paint(state, f"ttft: {pv_clock(seconds())}")
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+    return stopper
+
+
 def pv_update(state, text=None, final=False):
     """Repaint the one-line `pv -N thinking -btr` meter on stderr.
 
@@ -96,8 +146,6 @@ def pv_update(state, text=None, final=False):
     closes the line so the finished meter stays visible above the answer.
     A run with no reasoning at all therefore writes nothing, and repaints
     are capped at ten a second so a fast stream is not spent on escape codes.
-    Each repaint is padded to the widest line written so far, since a line
-    that shrinks would otherwise leave the tail of the previous one behind.
     """
     if state.get("done"):
         return
@@ -110,15 +158,12 @@ def pv_update(state, text=None, final=False):
     if not final and now - state.get("t_paint", 0) < 10 ** 8:
         return
     state["t_paint"] = now
-    line = pv_line("thinking", state["bytes"], (now - state["t0"]) / 1e9)
-    state["width"] = max(state.get("width", 0), len(line))
-    line = line.ljust(state["width"])
-    sys.stderr.write("\r" + (THINKING + line + RESET
-                             if use_color(sys.stderr) else line))
+    pv_paint(state, pv_line("thinking", state["bytes"],
+                            (now - state["t0"]) / 1e9))
     if final:
         sys.stderr.write("\n")
         state["done"] = True
-    sys.stderr.flush()
+        sys.stderr.flush()
 
 
 def options(model, overrides):
@@ -188,7 +233,8 @@ def main():
                         metavar="KEY=VALUE", help="override a model option")
     parser.add_argument("-x", "--extract", action="store_true")
     parser.add_argument("-c", "--continue", dest="cont", action="store_true")
-    parser.add_argument("--pv-thinking", dest="pv_thinking", action="store_true",
+    parser.add_argument("--pv-thinking", dest="pv_thinking", default=True,
+                        action=argparse.BooleanOptionalAction,
                         help="show reasoning as a one-line pv-style meter")
     parser.add_argument("-v", "--verbose", dest="v", action="count",
                         help="raise stderr verbosity; repeatable")
@@ -271,11 +317,15 @@ def main():
     stamps = {"t_start": T0, "status": None, "error": None}
     acc, chunks, painted = {}, [], None
     pv = {} if args.pv_thinking else None
+    waiter = pv_waiter() if pv is not None else None
     for event in events(model["api_base"], adaptor.PATH, headers, body, stamps):
         text, kind = adaptor.parse(event, acc)
         if not text:
             continue
         stamps.setdefault("t_first", time.time_ns())
+        if waiter is not None:      # the wait is over, whatever arrived
+            waiter()
+            waiter = None
         if kind == "thinking":
             if pv is not None:
                 pv_update(pv, text)
@@ -296,6 +346,8 @@ def main():
             sys.stdout.write(text)
             sys.stdout.flush()
     stamps["t_last"] = time.time_ns()
+    if waiter is not None:      # an error, or a reply with no text at all
+        waiter()
     if pv is not None:          # a reply that was nothing but reasoning
         pv_update(pv, final=True)
     response = "".join(chunks)
