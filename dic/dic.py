@@ -96,6 +96,8 @@ def pv_update(state, text=None, final=False):
     closes the line so the finished meter stays visible above the answer.
     A run with no reasoning at all therefore writes nothing, and repaints
     are capped at ten a second so a fast stream is not spent on escape codes.
+    Each repaint is padded to the widest line written so far, since a line
+    that shrinks would otherwise leave the tail of the previous one behind.
     """
     if state.get("done"):
         return
@@ -109,6 +111,8 @@ def pv_update(state, text=None, final=False):
         return
     state["t_paint"] = now
     line = pv_line("thinking", state["bytes"], (now - state["t0"]) / 1e9)
+    state["width"] = max(state.get("width", 0), len(line))
+    line = line.ljust(state["width"])
     sys.stderr.write("\r" + (THINKING + line + RESET
                              if use_color(sys.stderr) else line))
     if final:
