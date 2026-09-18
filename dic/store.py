@@ -152,14 +152,18 @@ def pv_bytes(n):
     return f"{value:.1f}{unit:>3}"
 
 
-def pv_clock(seconds):
-    """H:MM:SS, as pv -t prints it.
+def pv_clock(seconds, tenths=False):
+    """H:MM:SS, as pv -t prints it; optionally to a tenth of a second.
 
-    >>> pv_clock(64.7)
-    '0:01:04'
+    A tenth is visible movement on a clock nobody is timing anything with,
+    which is the point of the one that runs while dic waits.
+
+    >>> pv_clock(64.7), pv_clock(64.7, tenths=True)
+    ('0:01:04', '0:01:04.7')
     """
     whole = int(seconds)
-    return f"{whole // 3600}:{whole // 60 % 60:02d}:{whole % 60:02d}"
+    out = f"{whole // 3600}:{whole // 60 % 60:02d}:{whole % 60:02d}"
+    return out + f".{int((seconds - whole) * 10)}" if tenths else out
 
 
 def pv_line(name, nbytes, seconds):

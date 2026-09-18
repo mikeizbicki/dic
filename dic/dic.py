@@ -109,7 +109,8 @@ def pv_waiter():
     """Tick a bare clock until the first token arrives; return its stopper.
 
     A slow first token is indistinguishable from a hung program, so after
-    WAIT_DELAY seconds the line reads `ttft: 0:00:03` and keeps counting.
+    WAIT_DELAY seconds the line reads `ttft: 0:00:03.4` and keeps counting
+    in tenths, which is slow enough to read and fast enough to look alive.
     This needs a thread because the main thread is blocked in a socket read
     until exactly the moment the clock should stop; the stopper joins it, so
     only one of the two ever writes to stderr, and then closes the line with
@@ -124,7 +125,7 @@ def pv_waiter():
     def tick():
         while not stop.wait(0.1):
             if seconds() >= WAIT_DELAY:
-                pv_paint(state, f"ttft: {pv_clock(seconds())}")
+                pv_paint(state, f"ttft: {pv_clock(seconds(), tenths=True)}")
 
     thread = threading.Thread(target=tick, daemon=True)
     thread.start()
@@ -133,7 +134,7 @@ def pv_waiter():
         stop.set()
         thread.join()
         if state.get("width"):
-            pv_paint(state, f"ttft: {pv_clock(seconds())}")
+            pv_paint(state, f"ttft: {pv_clock(seconds(), tenths=True)}")
             sys.stderr.write("\n")
             sys.stderr.flush()
     return stopper

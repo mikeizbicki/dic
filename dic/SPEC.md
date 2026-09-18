@@ -109,10 +109,10 @@ If the model never emitted reasoning, the line is never written at all.
 
 A slow first token looks exactly like a hung program, so while the meter is
 enabled and half a second has passed with nothing received, the same line carries
-a bare clock and keeps counting:
+a bare clock and keeps counting, in tenths of a second:
 
 ```
-ttft: 0:00:03
+ttft: 0:00:03.4
 ```
 
 It has no byte counter because no bytes have arrived; it is closed with the final
