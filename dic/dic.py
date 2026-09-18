@@ -234,9 +234,7 @@ def main():
 
     report(verbosity, 3,
            f"POST {model['api_base']}{adaptor.PATH} {json.dumps(body)}")
-    color = use_color(sys.stdout)
     stamps = {"t_start": T0, "status": None, "error": None}
-    styles = {"": BLUE, "thinking": THINKING}
     acc, chunks, painted = {}, [], None
     for event in events(model["api_base"], adaptor.PATH, headers, body, stamps):
         text, kind = adaptor.parse(event, acc)
@@ -252,9 +250,8 @@ def main():
             continue
         chunks.append(text)
         if not args.extract:
-            if color and painted != kind:
-                sys.stdout.write((RESET if painted is not None else "")
-                                 + styles[kind])
+            if use_color(sys.stdout) and painted != kind:
+                sys.stdout.write((RESET if painted is not None else "") + BLUE)
                 painted = kind
             sys.stdout.write(text)
             sys.stdout.flush()
