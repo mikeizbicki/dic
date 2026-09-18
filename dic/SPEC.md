@@ -47,6 +47,8 @@ Whenever possible, names and semantics remain the same as simonw's `llm`.
 |            | `--mid`        | continue the conversation from the given message id |
 |            | `--pv-thinking` | show the reasoning stream as a one-line `pv`-style meter (the default) |
 |            | `--no-pv-thinking` | stream the reasoning text itself instead |
+|            | `--pv-response` | meter the answer on stderr too; the default when stdout is not a terminal |
+|            | `--no-pv-response` | do not meter the answer |
 |            | `--aliases`    | print shell alias definitions for `dic.sh` to eval |
 |            | `--models`     | list the configured model ids |
 |            | `--stats`      | print per-model runtime and usage statistics |
@@ -90,7 +92,7 @@ suppressed when it is `never`,
 and otherwise used only when the stream is a terminal and `$NO_COLOR` is unset,
 so a pipe gets clean text without the caller having to ask.
 
-### Reasoning
+### Progress meters
 
 Reasoning is progress rather than content, and a thinking model can emit thousands
 of tokens that nobody reads and that push the answer off the screen.
@@ -106,6 +108,15 @@ and is terminated by a newline when the first answer token arrives, so the answe
 starts on its own line and exactly one thinking line remains at exit.
 If the model never emitted reasoning, the line is never written at all.
 `--no-pv-thinking` streams the reasoning text itself instead.
+
+`--pv-response` meters the answer the same way and in the same place, but *as well
+as* the answer rather than instead of it: the text still goes to stdout untouched.
+It is therefore off by default when stdout is a terminal, where the meter and the
+answer would overwrite each other, and on by default when stdout is a pipe, where
+stderr is the only thing on the screen and the meter is the only sign of life.
+`--pv-response` and `--no-pv-response` force it either way.
+Both meters are the same code and the same line of the screen: the thinking meter
+closes when the first answer token arrives, and the response meter starts below it.
 
 A slow first token looks exactly like a hung program, so while the meter is
 enabled and half a second has passed with nothing received, the same line carries

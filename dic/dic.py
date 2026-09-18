@@ -141,12 +141,13 @@ def pv_waiter():
 
 
 def pv_update(state, text=None, final=False):
-    """Repaint the one-line `pv -N thinking -btr` meter on stderr.
+    """Repaint one `pv -N <state["name"]> -btr` meter on stderr.
 
     text adds its bytes to the meter, creating it on the first call; final
-    closes the line so the finished meter stays visible above the answer.
-    A run with no reasoning at all therefore writes nothing, and repaints
-    are capped at ten a second so a fast stream is not spent on escape codes.
+    closes the line so the finished meter stays visible above whatever comes
+    next.  A stream that never arrives therefore writes nothing at all, and
+    repaints are capped at ten a second so a fast stream is not spent on
+    escape codes.
     """
     if state.get("done"):
         return
@@ -159,7 +160,7 @@ def pv_update(state, text=None, final=False):
     if not final and now - state.get("t_paint", 0) < 10 ** 8:
         return
     state["t_paint"] = now
-    pv_paint(state, pv_line("thinking", state["bytes"],
+    pv_paint(state, pv_line(state["name"], state["bytes"],
                             (now - state["t0"]) / 1e9))
     if final:
         sys.stderr.write("\n")
@@ -237,6 +238,10 @@ def main():
     parser.add_argument("--pv-thinking", dest="pv_thinking", default=True,
                         action=argparse.BooleanOptionalAction,
                         help="show reasoning as a one-line pv-style meter")
+    parser.add_argument("--pv-response", dest="pv_response",
+                        default=not sys.stdout.isatty(),
+                        action=argparse.BooleanOptionalAction,
+                        help="meter the answer on stderr (off on a terminal)")
     parser.add_argument("-v", "--verbose", dest="v", action="count",
                         help="raise stderr verbosity; repeatable")
     parser.add_argument("-q", "--quiet", dest="v", action="store_const", const=0)
@@ -317,8 +322,9 @@ def main():
            f"POST {model['api_base']}{adaptor.PATH} {json.dumps(body)}")
     stamps = {"t_start": T0, "status": None, "error": None}
     acc, chunks, painted = {}, [], None
-    pv = {} if args.pv_thinking else None
-    waiter = pv_waiter() if pv is not None else None
+    pv = {"name": "thinking"} if args.pv_thinking else None
+    pv_resp = {"name": "response"} if args.pv_response else None
+    waiter = pv_waiter() if pv is not None or pv_resp is not None else None
     for event in events(model["api_base"], adaptor.PATH, headers, body, stamps):
         text, kind = adaptor.parse(event, acc)
         if not text:
@@ -340,6 +346,8 @@ def main():
         if pv is not None:      # the answer starts on a line of its own
             pv_update(pv, final=True)
         chunks.append(text)
+        if pv_resp is not None:
+            pv_update(pv_resp, text)
         if not args.extract:
             if use_color(sys.stdout) and painted != kind:
                 sys.stdout.write((RESET if painted is not None else "") + BLUE)
@@ -351,6 +359,8 @@ def main():
         waiter()
     if pv is not None:          # a reply that was nothing but reasoning
         pv_update(pv, final=True)
+    if pv_resp is not None:
+        pv_update(pv_resp, final=True)
     response = "".join(chunks)
     if not args.extract:
         if painted is not None:
