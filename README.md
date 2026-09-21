@@ -3,11 +3,11 @@
 `dic` is a minimalist CLI tool for working with chat LLMs models.
 It is designed to be a "thin wrapper" around API endpoints.
 
-<img src=img/unix-magic-poster.jpg align=right width=300px />
-
 `dic` is similar to simonw's `llm` tool but with an emphasis on speed and Unix-style composability.
 
 ## Etymology
+
+<img src=img/unix-magic-poster.jpg align=right width=200px />
 
 "Dic" is Latin for the command "speak".
 The idea is that working with AIs is like working with demons and magic,
