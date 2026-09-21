@@ -1,6 +1,8 @@
 # dic
 
 `dic` is a minimalist CLI tool for working with chat LLMs models.
+It is designed to be a "thin wrapper" around API endpoints.
+
 `dic` is similar to simonw's `llm` tool but with an emphasis on speed and Unix-style composability.
 
 ## Etymology
