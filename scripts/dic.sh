@@ -7,5 +7,7 @@ export DIC_SYSTEM="Keep your response short, between 1-20 lines. Focus on a high
 alias qwen='dic -m groq+qwen'
 alias fable='dic -m anthropic+fable'
 alias opus='dic -m anthropic+opus'
+alias sonnet='dic -m anthropic+sonnet'
+alias haiku='dic -m anthropic+haiku'
 alias deepseek='dic -m openrouter+deepseek'
 alias gemini='dic -m openrouter+gemini'
