@@ -1,4 +1,4 @@
-# dic SPEC
+# dic
 
 `dic` is a minimalist CLI tool for working with chat LLMs models.
 `dic` is similar to simonw's `llm` tool but with an emphasis on speed and Unix-style composability.
@@ -8,6 +8,9 @@
 "Dic" is Latin for the command "speak".
 The idea is that working with AIs is like working with demons and magic,
 and Latin is the traditional language for controlling demons and casting spells.
+
+`dic` should be pronounced using classical Latin pronunciation.
+It sounds like English "deek" and not "dick" or "dyke".
 
 ## Why fork `llm`?
 
