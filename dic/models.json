@@ -3,16 +3,16 @@
 
   "#ids": "An id is a '+'-separated chain, weakest first: 'groq+qwen' is the entry 'qwen' layered on the entry 'groq'.  Entries with \"abstract\": true are providers or mixins; they cannot be used with -m, only inherited from.  Chains nobody wrote down work too: 'thinking-high+anthropic+sonnet'.",
 
-  "cerebras": {
-    "abstract": true,
-    "api_base": "https://api.cerebras.ai/v1",
-    "api_key_name": "CEREBRAS_API_KEY"
-  },
-
   "groq": {
     "abstract": true,
     "api_base": "https://api.groq.com/openai/v1",
     "api_key_name": "GROQ_API_KEY"
+  },
+
+  "cerebras": {
+    "abstract": true,
+    "api_base": "https://api.cerebras.ai/v1",
+    "api_key_name": "CEREBRAS_API_KEY"
   },
 
   "anthropic": {
