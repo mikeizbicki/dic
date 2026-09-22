@@ -24,7 +24,7 @@ guess at it.
     fuzzy-apply --dry-run -v
     fuzzy-apply -t 0.9 patch.diff
 """
-import argparse, difflib, os, re, sys
+import argparse, difflib, os, re, subprocess, sys
 
 HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 DIFF_RE = re.compile(r"^diff --git ")
@@ -33,6 +33,20 @@ DIFF_RE = re.compile(r"^diff --git ")
 def note(message):
     """One diagnostic line on stderr; git apply is silent, this is not."""
     sys.stderr.write(message + "\n")
+
+
+def stage(path):
+    """Stage path with `git add`, the way `git apply --index` does.
+
+    Run after the write, so a failure here only means the user has to
+    stage the file by hand; the file on disk is already correct.
+    """
+    result = subprocess.run(["git", "add", "-A", "--", path],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        note(f"{path}: git add failed: {result.stderr.strip()}")
+        return False
+    return True
 
 
 def _path(text):
@@ -238,6 +252,7 @@ def main():
         sys.exit(f"fuzzy-apply: {args.patch}: no diff found")
 
     failed = False
+    applied = []                            # paths written, staged at the end
     for entry in files:
         old = strip_path(entry["old"], args.strip)
         new = strip_path(entry["new"], args.strip)
@@ -251,6 +266,7 @@ def main():
                     with open(path, "w") as handle:
                         handle.writelines(body)
                 note(f"{path}: created ({len(body)} lines)")
+                applied.append(path)
             except OSError as error:
                 note(f"{path}: {error}")
                 failed = True
@@ -261,6 +277,7 @@ def main():
                 if not args.dry_run:
                     os.remove(path)
                 note(f"{path}: deleted")
+                applied.append(path)
             except OSError as error:
                 note(f"{path}: {error}")
                 failed = True
@@ -295,6 +312,12 @@ def main():
             failed = True
             continue
         note(f"{path}: {len(matches)}/{len(entry['hunks'])} hunks applied")
+        applied.append(path)
+
+    if not args.dry_run:
+        for path in applied:
+            if not stage(path):
+                failed = True
 
     sys.exit(1 if failed else 0)
 
