@@ -59,7 +59,7 @@ function geni-apply() {
     # so the commit message above the patch is skipped over.
     # Finally, it either fully succeeds or leaves the tree untouched.
     # So on error, the repo remains exactly as if nothing had happened.
-    if ! git apply --index --recount --ignore-whitespace "$patch_file"; then
+    if ! git apply --index --recount --3way --ignore-whitespace "$patch_file"; then
         echo "geni-error: git apply failed to apply the patch" >&2
         echo "geni-hint: fix the raw patch at: $patch_file" >&2
         echo "geni-hint: after fixing, rerun geni-apply" >&2
