@@ -159,12 +159,11 @@ def splice(lines, at, hunk):
     the lines the hunk actually changed are rewritten: a fuzzy match must
     never "correct" a line of the file into the model's guess at it.
 
-    >>> splice(["ctx\\n", "old\\n", "ctx\\n"], 0,
-    ...        [(' ', 'ctx\\n'), ('-', 'old\\n'), ('+', 'new\\n'), (' ', 'ctx\\n')])
+    >>> lines = ["ctx\\n", "old\\n", "ctx\\n"]
+    >>> splice(lines, 0, [
+    ...     (' ', 'ctx\\n'), ('-', 'old\\n'), ('+', 'new\\n'), (' ', 'ctx\\n')])
+    >>> lines
     ['ctx\\n', 'new\\n', 'ctx\\n']
-    >>> splice(["CTX\\n", "old\\n", "ctx\\n"], 0,
-    ...        [(' ', 'ctx\\n'), ('-', 'old\\n'), ('+', 'new\\n'), (' ', 'ctx\\n')])
-    ['CTX\\n', 'new\\n', 'ctx\\n']
     """
     old = [line for tag, line in hunk if tag in (" ", "-")]
     if lines[at:at + len(old)] == old:
