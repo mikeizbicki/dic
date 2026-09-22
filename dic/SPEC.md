@@ -32,6 +32,12 @@ Code should be succinct and low token but human friendly.
 Include useful variable names and doctests,
 but do not go overboard on verbosity.
 
+`dic` is a package -- `dic.dic`, `dic.config`, `dic.store`, `dic.adaptors.*` --
+so that it can later be imported as a library, and its modules therefore import
+each other by their full package name.
+`python dic/dic.py` still works: the entry point puts the checkout root on
+`sys.path` when `__package__` is None.
+
 ## Options
 
 `dic` supports the following options.
@@ -463,6 +469,8 @@ so `anthropic-messages` is preferred.
 
 As a final escape hatch, if `api_type` names a file `~/.config/fac/adapters/<api_type>.py`,
 that file is imported and used as the adapter.
+It is loaded by path, but it imports `dic`'s own modules by package name --
+`from dic.store import data_url` -- exactly as the built-in adapters do.
 This import happens only when a model that references it is actually selected,
 so it costs nothing at startup for everyone else.
 

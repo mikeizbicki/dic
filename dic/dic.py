@@ -17,13 +17,14 @@ T0 = time.time_ns()             # cost -- imports, config, db -- as well as the 
 import argparse, http.client, json, os, re, sys, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:          # so `store` and `adaptors.*` resolve whether
-    sys.path.insert(0, HERE)      # we are run as a script or as `-m dic.dic`
+if __package__ is None:           # `python dic/dic.py`: make the checkout root
+    sys.path.insert(0, os.path.dirname(HERE))   # importable as the dic package
 
-import config
-from store import (BLUE, THINKING, CONFIG_DIR, RESET, STATS, db, die, history,
-                   normalize, pv_clock, pv_line, report, session_read, session_write,
-                   store_attachment, turns_from_rows, ulid, use_color)
+from dic import config
+from dic.store import (BLUE, THINKING, CONFIG_DIR, RESET, STATS, db, die,
+                       history, normalize, pv_clock, pv_line, report,
+                       session_read, session_write, store_attachment,
+                       turns_from_rows, ulid, use_color)
 
 ADAPTER_DIR = os.path.join(CONFIG_DIR, "adapters")
 
@@ -31,19 +32,22 @@ ADAPTER_DIR = os.path.join(CONFIG_DIR, "adapters")
 def load_adaptor(api_type):
     """The module implementing api_type: PATH, auth, build, parse, finish.
 
-    Built-ins are dic/adaptors/<api_type with '-' as '_'>.py.  Anything else
+    Built-ins are dic.adaptors.<api_type with '-' as '_'>.  Anything else
     must be ~/.config/fac/adapters/<api_type>.py exporting the same five
-    names.  Only the selected adaptor is ever imported.
+    names and importing dic's own helpers by package name, e.g.
+    `from dic.store import data_url`.  Only the selected adaptor is ever
+    imported, and each one gets its own module name, so two of them cannot
+    collide.
     """
     import importlib
     name = api_type.replace("-", "_")
     if os.path.exists(os.path.join(HERE, "adaptors", f"{name}.py")):
-        return importlib.import_module(f"adaptors.{name}")
+        return importlib.import_module(f"dic.adaptors.{name}")
     path = os.path.join(ADAPTER_DIR, f"{api_type}.py")
     if not os.path.exists(path):
         die(f"unknown api_type: {api_type}")
     import importlib.util
-    spec = importlib.util.spec_from_file_location("dic_adaptor", path)
+    spec = importlib.util.spec_from_file_location(f"dic_adaptor_{name}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

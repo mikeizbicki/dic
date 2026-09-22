@@ -9,7 +9,7 @@ Every adaptor module exports the same five names:
     parse(event, acc)  one SSE event -> (text, kind) to print, state in acc
     finish(acc)     acc -> the JSON stored in messages.response_raw
 """
-from store import data_url
+from dic.store import data_url
 
 PATH = "/chat/completions"
 

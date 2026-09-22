@@ -6,7 +6,7 @@ are encrypted and meaningless to dic) can be replayed untouched.
 
 Exports PATH, auth, build, parse, finish; see adaptors/openai_chat.py.
 """
-from store import data_url
+from dic.store import data_url
 
 PATH = "/responses"
 
