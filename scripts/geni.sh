@@ -59,7 +59,7 @@ function geni-apply() {
     # so the commit message above the patch is skipped over.
     # Finally, it either fully succeeds or leaves the tree untouched.
     # So on error, the repo remains exactly as if nothing had happened.
-    if ! git apply --index --recount --3way --ignore-whitespace "$patch_file"; then
+    if ! git apply --index --recount --ignore-whitespace "$patch_file"; then
         # `git apply` needs every context line to match exactly, which the
         # model does not always manage; `git-apply-fuzzy` retries the patch
         # and tolerates small mismatches in the context lines.
