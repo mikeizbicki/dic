@@ -18,10 +18,6 @@ T0 = time.time_ns()             # cost -- imports, config, db -- as well as the 
 
 import os, sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-if __package__ is None:           # `python dic/dic.py`: make the checkout root
-    sys.path.insert(0, os.path.dirname(HERE))   # importable as the dic package
-
 from dic.client import dic
 from dic.options import parser
 
