@@ -27,6 +27,9 @@ def build(model, turns, system, params):
     A content list of pure text is collapsed to a plain string, which is what
     older and smaller servers actually accept.
 
+    A turn carrying "raw" is replayed verbatim, and an image becomes a data:
+    URL, so its turn stays a list of parts.
+
     >>> b = build({"model_name": "m"},
     ...           [{"role": "user", "blocks": [{"type": "text", "text": "hi"}]}],
     ...           "be brief", {"temperature": 0})
@@ -34,6 +37,16 @@ def build(model, turns, system, params):
     [{'role': 'system', 'content': 'be brief'}, {'role': 'user', 'content': 'hi'}]
     >>> b["model"], b["stream"], b["temperature"]
     ('m', True, 0)
+    >>> b = build({"model_name": "m"},
+    ...           [{"role": "assistant", "blocks": [], "raw": {"role": "assistant"}},
+    ...            {"role": "user", "blocks": [
+    ...                {"type": "image", "mime_type": "image/png", "data": b"hi"},
+    ...                {"type": "text", "text": "what is this"}]}],
+    ...           None, {})
+    >>> b["messages"][0]
+    {'role': 'assistant'}
+    >>> b["messages"][1]["content"][0]["image_url"]["url"]
+    'data:image/png;base64,aGk='
     """
     msgs = []
     if system:

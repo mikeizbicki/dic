@@ -21,6 +21,8 @@ def auth(key):
 def build(model, turns, system, params):
     """IR turns to a streaming responses body; system is the top-level instructions.
 
+    A turn carrying "raw" is replayed verbatim, and an image becomes a data: URL.
+
     >>> b = build({"model_name": "m"},
     ...           [{"role": "user", "blocks": [{"type": "text", "text": "hi"}]}],
     ...           "sys", {})
@@ -28,6 +30,15 @@ def build(model, turns, system, params):
     [{'role': 'user', 'content': [{'type': 'input_text', 'text': 'hi'}]}]
     >>> b["instructions"], b["stream"]
     ('sys', True)
+    >>> b = build({"model_name": "m"},
+    ...           [{"role": "assistant", "blocks": [], "raw": [{"type": "reasoning"}]},
+    ...            {"role": "user", "blocks": [
+    ...                {"type": "image", "mime_type": "image/png", "data": b"hi"}]}],
+    ...           None, {})
+    >>> b["input"][0]
+    {'type': 'reasoning'}
+    >>> b["input"][1]["content"][0]["image_url"]
+    'data:image/png;base64,aGk='
     """
     items = []
     for turn in turns:

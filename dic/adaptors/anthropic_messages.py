@@ -25,6 +25,9 @@ def build(model, turns, system, params):
     max_tokens is required by the API, so a default is supplied and params
     (merged last) can override it like anything else.
 
+    A turn carrying "raw" is replayed verbatim, and an image becomes a base64
+    source block.
+
     >>> b = build({"model_name": "m"},
     ...           [{"role": "user", "blocks": [{"type": "text", "text": "hi"}]}],
     ...           "sys", {"max_tokens": 10})
@@ -32,6 +35,15 @@ def build(model, turns, system, params):
     [{'role': 'user', 'content': [{'type': 'text', 'text': 'hi'}]}]
     >>> b["system"], b["max_tokens"]
     ('sys', 10)
+    >>> b = build({"model_name": "m"},
+    ...           [{"role": "assistant", "blocks": [], "raw": [{"type": "thinking"}]},
+    ...            {"role": "user", "blocks": [
+    ...                {"type": "image", "mime_type": "image/png", "data": b"hi"}]}],
+    ...           None, {})
+    >>> b["messages"][0]
+    {'role': 'assistant', 'content': [{'type': 'thinking'}]}
+    >>> b["messages"][1]["content"][0]["source"]
+    {'type': 'base64', 'media_type': 'image/png', 'data': 'aGk='}
     """
     msgs = []
     for turn in turns:
@@ -85,6 +97,22 @@ def parse(event, acc):
     >>> parse({"type": "content_block_delta",
     ...        "delta": {"type": "thinking_delta", "thinking": "hmm"}}, acc)
     ('hmm', 'thinking')
+    >>> parse({"type": "content_block_delta",
+    ...        "delta": {"type": "signature_delta", "signature": "sig"}}, acc)
+    ('', '')
+    >>> acc["raw"]
+    [{'type': 'thinking', 'thinking': 'hmm', 'signature': 'sig'}]
+    >>> acc = {}
+    >>> parse({"type": "content_block_start",
+    ...        "content_block": {"type": "tool_use", "name": "f"}}, acc)
+    ('', '')
+    >>> parse({"type": "content_block_delta",
+    ...        "delta": {"type": "input_json_delta", "partial_json": '{"a": 1}'}}, acc)
+    ('', '')
+    >>> parse({"type": "content_block_stop"}, acc)
+    ('', '')
+    >>> acc["raw"]
+    [{'type': 'tool_use', 'name': 'f', 'input': {'a': 1}}]
     """
     kind = event.get("type")
     blocks = acc.setdefault("raw", [])
