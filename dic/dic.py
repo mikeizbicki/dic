@@ -393,7 +393,7 @@ def main():
 
     if args.extract:
         snippet = extract(response)
-        sys.stdout.write(BLUE + snippet + RESET if color else snippet)
+        sys.stdout.write(BLUE + snippet + RESET if use_color(sys.stdout) else snippet)
     sys.stdout.flush()
 
     report(verbosity, 1,
