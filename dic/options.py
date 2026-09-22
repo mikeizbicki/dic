@@ -97,7 +97,7 @@ def from_env(mapping):
     out = {}
     for name, f in flags().items():
         variable = _variable(name, f)
-        if variable in mapping:
+        if variable and mapping and variable in mapping:
             out[name] = _decode(mapping[variable])
     return out
 
