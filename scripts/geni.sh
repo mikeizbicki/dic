@@ -60,10 +60,16 @@ function geni-apply() {
     # Finally, it either fully succeeds or leaves the tree untouched.
     # So on error, the repo remains exactly as if nothing had happened.
     if ! git apply --index --recount --3way --ignore-whitespace "$patch_file"; then
-        echo "geni-error: git apply failed to apply the patch" >&2
-        echo "geni-hint: fix the raw patch at: $patch_file" >&2
-        echo "geni-hint: after fixing, rerun geni-apply" >&2
-        return 1
+        # `git apply` needs every context line to match exactly, which the
+        # model does not always manage; `git-apply-fuzzy` retries the patch
+        # and tolerates small mismatches in the context lines.
+        echo "geni-warning: git apply failed, retrying with git-apply-fuzzy" >&2
+        if ! git-apply-fuzzy "$patch_file"; then
+            echo "geni-error: git apply and git-apply-fuzzy both failed" >&2
+            echo "geni-hint: fix the raw patch at: $patch_file" >&2
+            echo "geni-hint: after fixing, rerun geni-apply" >&2
+            return 1
+        fi
     fi
 
     # `git apply` staged the changes, so no separate `git add` is required.
