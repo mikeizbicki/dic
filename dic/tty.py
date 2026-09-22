@@ -17,7 +17,7 @@ THINKING = "\033[38;5;245m"             # reasoning: faded gray on the usual bac
 RESET = "\033[0m"
 
 
-def use_color(stream):
+def use_color(stream, env=None):
     """Whether to emit ANSI colour on stream.
 
     $DIC_COLOR (never|auto|always) wins, then $NO_COLOR, then isatty, so a
@@ -25,20 +25,22 @@ def use_color(stream):
     for colour anyway.  dic never prints uncoloured text to a terminal: every
     stream has a meaning (blue output, orange cost, red error).
     """
-    mode = os.environ.get("DIC_COLOR", "auto")
+    env = os.environ if env is None else env
+    mode = env.get("DIC_COLOR", "auto")
     if mode in ("never", "always"):
         return mode == "always"
-    return stream.isatty() and not os.environ.get("NO_COLOR")
+    return stream.isatty() and not env.get("NO_COLOR")
 
 
-def die(msg):
+def die(msg, err=None, env=None):
     """Report an error in red on stderr and exit nonzero."""
+    err = sys.stderr if err is None else err
     line = f"dic: {msg}\n"
-    sys.stderr.write(RED + line + RESET if use_color(sys.stderr) else line)
+    err.write(RED + line + RESET if use_color(err, env) else line)
     sys.exit(1)
 
 
-def report(verbosity, level, msg):
+def report(verbosity, level, msg, err=None, env=None):
     """Write msg to stderr in orange when verbosity has reached level.
 
     All of dic's stderr goes through here, so colour policy and verbosity
@@ -48,9 +50,10 @@ def report(verbosity, level, msg):
     """
     if verbosity < level:
         return
+    err = sys.stderr if err is None else err
     line = f"{msg}\n"
-    sys.stderr.write(ORANGE + line + RESET if use_color(sys.stderr) else line)
-    sys.stderr.flush()
+    err.write(ORANGE + line + RESET if use_color(err, env) else line)
+    err.flush()
 
 
 def pv_bytes(n):
@@ -95,23 +98,23 @@ def pv_line(name, nbytes, seconds):
             f" [{pv_bytes(rate)}/s]")
 
 
-def pv_paint(state, line):
+def pv_paint(state, line, err=None, env=None):
     """Rewrite one status line in place on stderr, in the reasoning gray.
 
     The line is padded to the widest one written so far, since a line that
     shrinks would otherwise leave the tail of the previous one behind.
     """
+    err = sys.stderr if err is None else err
     state["width"] = max(state.get("width", 0), len(line))
     line = line.ljust(state["width"])
-    sys.stderr.write("\r" + (THINKING + line + RESET
-                             if use_color(sys.stderr) else line))
-    sys.stderr.flush()
+    err.write("\r" + (THINKING + line + RESET if use_color(err, env) else line))
+    err.flush()
 
 
 WAIT_DELAY = 0.5     # a first token faster than this needs no reassurance
 
 
-def pv_waiter():
+def pv_waiter(err=None, env=None):
     """Tick a bare clock until the first token arrives; return its stopper.
 
     A slow first token is indistinguishable from a hung program, so after
@@ -123,6 +126,7 @@ def pv_waiter():
     the final time -- if the clock was ever shown at all.
     """
     import threading
+    err = sys.stderr if err is None else err
     state, start, stop = {}, time.time_ns(), threading.Event()
 
     def seconds():
@@ -131,7 +135,7 @@ def pv_waiter():
     def tick():
         while not stop.wait(0.1):
             if seconds() >= WAIT_DELAY:
-                pv_paint(state, f"ttft: {pv_clock(seconds(), tenths=True)}")
+                pv_paint(state, f"ttft: {pv_clock(seconds(), tenths=True)}", err, env)
 
     thread = threading.Thread(target=tick, daemon=True)
     thread.start()
@@ -140,13 +144,13 @@ def pv_waiter():
         stop.set()
         thread.join()
         if state.get("width"):
-            pv_paint(state, f"ttft: {pv_clock(seconds(), tenths=True)}")
-            sys.stderr.write("\n")
-            sys.stderr.flush()
+            pv_paint(state, f"ttft: {pv_clock(seconds(), tenths=True)}", err, env)
+            err.write("\n")
+            err.flush()
     return stopper
 
 
-def pv_update(state, text=None, final=False):
+def pv_update(state, text=None, final=False, err=None, env=None):
     """Repaint one `pv -N <state["name"]> -btr` meter on stderr.
 
     text adds its bytes to the meter, creating it on the first call; final
@@ -157,6 +161,7 @@ def pv_update(state, text=None, final=False):
     """
     if state.get("done"):
         return
+    err = sys.stderr if err is None else err
     now = time.time_ns()
     if text is not None:
         state["bytes"] = state.get("bytes", 0) + len(text.encode())
@@ -167,11 +172,11 @@ def pv_update(state, text=None, final=False):
         return
     state["t_paint"] = now
     pv_paint(state, pv_line(state["name"], state["bytes"],
-                            (now - state["t0"]) / 1e9))
+                            (now - state["t0"]) / 1e9), err, env)
     if final:
-        sys.stderr.write("\n")
+        err.write("\n")
         state["done"] = True
-        sys.stderr.flush()
+        err.flush()
 
 
 def summary(model, tokens_in, tokens_out, mid, stamps, verbosity):

@@ -19,13 +19,21 @@ one stat per file and one query.
 """
 import json, os
 
-from dic.store import CONFIG_DIR
+from dic.store import config_dir
 from dic.tty import die
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULTS_PATH = os.path.join(HERE, "models.json")
-PROVIDERS_PATH = os.path.join(CONFIG_DIR, "providers.json")
-MODELS_PATH = os.path.join(CONFIG_DIR, "models.json")
+
+
+def providers_path(env):
+    """The user's providers, ~/.config/fac/providers.json."""
+    return os.path.join(config_dir(env), "providers.json")
+
+
+def models_path(env):
+    """The user's models, ~/.config/fac/models.json."""
+    return os.path.join(config_dir(env), "models.json")
 
 # The ancestor chain of an id, folded root-first.  The first CTE is the same
 # walk as store.history(): the same query answers "who is my conversational
@@ -79,14 +87,15 @@ def merge(base, over):
     return out
 
 
-def sources():
+def sources(env, models_file=None):
     """The configuration files that exist, weakest first.
 
-    The packaged defaults, then the user's providers and models, then
-    $DIC_MODELS: later files are merged over earlier ones rather than
-    replacing them, so a user file may change one key of one model.
+    The packaged defaults, then the user's providers and models, then the
+    file named by --models-file / $DIC_MODELS_FILE: later files are merged
+    over earlier ones rather than replacing them, so a user file may change
+    one key of one model.
     """
-    paths = (DEFAULTS_PATH, PROVIDERS_PATH, MODELS_PATH, os.environ.get("DIC_MODELS"))
+    paths = (DEFAULTS_PATH, providers_path(env), models_path(env), models_file)
     return [p for p in paths if p and os.path.exists(p)]
 
 
@@ -111,14 +120,14 @@ def entries(path):
     return out
 
 
-def sync(conn):
+def sync(conn, env, models_file=None):
     """Reparse the sources into the config cache, but only if one changed.
 
     A stat is ~20us and a parse is milliseconds, so the common invocation
     pays four stats and nothing else.
     """
     stamps = []
-    for path in sources():
+    for path in sources(env, models_file):
         st = os.stat(path)
         stamps.append((path, st.st_mtime_ns, st.st_size))
     cached = [tuple(r) for r in conn.execute(
@@ -224,7 +233,7 @@ def model_ids(conn):
         "SELECT id FROM config WHERE abstract=0 AND pos IS NOT NULL ORDER BY pos")]
 
 
-def default_id(conn):
+def default_id(conn, env):
     """The model used when neither -m nor $DIC_MODEL says otherwise.
 
     The first configured entry whose api_key_name is actually exported, so an
@@ -234,10 +243,10 @@ def default_id(conn):
     first = None
     for model_id in model_ids(conn):
         first = first or model_id
-        if os.environ.get(resolved_keys(conn, model_id).get("api_key_name") or ""):
+        if env.get(resolved_keys(conn, model_id).get("api_key_name") or ""):
             return model_id
     if not first:
-        die(f"no models configured: write {MODELS_PATH}")
+        die(f"no models configured: write {models_path(env)}")
     return first
 
 

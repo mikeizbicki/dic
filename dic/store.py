@@ -16,8 +16,7 @@ the adaptor converts the blocks and provider-opaque ones are dropped whole.
 """
 import base64, json, mimetypes, os, sqlite3, time
 
-CONFIG_DIR = os.path.expanduser("~/.config/fac")
-DB_PATH = os.path.join(CONFIG_DIR, "dic.db")
+from dic.tty import die
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -124,10 +123,27 @@ def data_url(block):
 
 # ---------------------------------------------------------------- sqlite
 
-def db():
-    """Open ~/.config/fac/dic.db, creating the append-only schema if needed."""
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+def config_dir(env):
+    """The directory holding dic's database and the user's configuration.
+
+    >>> config_dir({"HOME": "/home/u"})
+    '/home/u/.config/fac'
+    """
+    home = env.get("HOME")
+    return (os.path.join(home, ".config", "fac") if home
+            else os.path.expanduser("~/.config/fac"))
+
+
+def db_path(env):
+    """The sqlite file holding the message tree and the parsed config cache."""
+    return os.path.join(config_dir(env), "dic.db")
+
+
+def db(env):
+    """Open the database named by env, creating the append-only schema if needed."""
+    path = db_path(env)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     return conn
@@ -212,31 +228,31 @@ def normalize(turns):
 
 # ---------------------------------------------------------------- session
 
-def session_path():
+def session_path(env):
     """The tmpfs file holding this shell session's last mid.
 
     One file per DIC_SESSION value, wiped on logout: no sessions table, no
     garbage collection, no locking, and the mtime is "last used" for free.
     """
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    runtime = env.get("XDG_RUNTIME_DIR")
     base = (os.path.join(runtime, "fac", "dic") if runtime
             else f"/tmp/fac-{os.getuid()}/dic")
-    return os.path.join(base, os.environ.get("DIC_SESSION", "global"))
+    return os.path.join(base, env.get("DIC_SESSION", "global"))
 
 
-def session_read():
+def session_read(env):
     """The mid that -c continues; a missing pointer is fatal, never a new chat."""
     try:
-        with open(session_path()) as f:
+        with open(session_path(env)) as f:
             return f.read().strip()
     except OSError:
-        session = os.environ.get("DIC_SESSION", "global")
+        session = env.get("DIC_SESSION", "global")
         die(f"no conversation in this session (DIC_SESSION={session})")
 
 
-def session_write(mid):
+def session_write(mid, env):
     """Point this session at mid, atomically."""
-    path = session_path()
+    path = session_path(env)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w") as f:
