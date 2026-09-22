@@ -20,6 +20,7 @@ import os, sys
 
 from dic.client import dic
 from dic.options import parser
+from dic.tty import die
 
 
 def load_adaptor(api_type):
@@ -47,13 +48,17 @@ def load_adaptor(api_type):
 
 
 def main():
-    args = vars(parser().parse_args())
-    prompt = " ".join(args.pop("prompt"))
-    if not sys.stdin.isatty():
-        piped = sys.stdin.read()
-        prompt = f"{prompt}\n\n{piped}" if (prompt and piped.strip()) else (prompt or piped)
-    dic(prompt, **args, t_start=T0, env=os.environ, out=sys.stdout, err=sys.stderr)
-    sys.stdout.flush()
+    try:
+        args = vars(parser().parse_args())
+        prompt = " ".join(args.pop("prompt"))
+        if not sys.stdin.isatty():
+            piped = sys.stdin.read()
+            prompt = f"{prompt}\n\n{piped}" if (prompt and piped.strip()) else (prompt or piped)
+        dic(prompt, **args, t_start=T0, env=os.environ, out=sys.stdout, err=sys.stderr)
+        sys.stdout.flush()
+    except KeyboardInterrupt:
+        # a ^C before the stream: dic() reports the ones during a reply itself
+        die("cancelled", err=sys.stderr, env=os.environ)
     os._exit(0)   # skip interpreter teardown; the last token is already out
 
 

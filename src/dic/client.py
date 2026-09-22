@@ -278,42 +278,66 @@ def dic(prompt,
     pv = {"name": "thinking"} if pv_thinking else None
     pv_resp = {"name": "response"} if pv_response else None
     waiter = pv_waiter(err=err, env=env) if pv is not None or pv_resp is not None else None
-    for event in events(model["api_base"], adaptor.PATH, headers, body, stamps):
-        text, kind = adaptor.parse(event, acc)
-        if not text:
-            continue
-        stamps.setdefault("t_first", time.time_ns())
-        if waiter is not None:      # the wait is over, whatever arrived
+
+    def close_meters():
+        """Stop the wait clock and close each meter, so nothing repaints after."""
+        nonlocal waiter
+        if waiter is not None:  # an error, a cancel, or a reply with no text
             waiter()
             waiter = None
-        if kind == "thinking":
-            if pv is not None:
-                pv_update(pv, text, err=err, env=env)
-            elif use_color(err, env):
-                err.write(THINKING + text + RESET)
-            else:
-                err.write(text)
-            if pv is None:
-                err.flush()
-            continue
-        if pv is not None:      # the answer starts on a line of its own
+        if pv is not None:      # a reply that was nothing but reasoning
             pv_update(pv, final=True, err=err, env=env)
-        chunks.append(text)
         if pv_resp is not None:
-            pv_update(pv_resp, text, err=err, env=env)
-        if not knobs["extract"]:
-            if use_color(out, env) and painted != kind:
-                out.write((RESET if painted is not None else "") + BLUE)
-                painted = kind
-            out.write(text)
+            pv_update(pv_resp, final=True, err=err, env=env)
+
+    try:
+        for event in events(model["api_base"], adaptor.PATH, headers, body, stamps):
+            text, kind = adaptor.parse(event, acc)
+            if not text:
+                continue
+            stamps.setdefault("t_first", time.time_ns())
+            if waiter is not None:      # the wait is over, whatever arrived
+                waiter()
+                waiter = None
+            if kind == "thinking":
+                if pv is not None:
+                    pv_update(pv, text, err=err, env=env)
+                elif use_color(err, env):
+                    err.write(THINKING + text + RESET)
+                else:
+                    err.write(text)
+                if pv is None:
+                    err.flush()
+                continue
+            if pv is not None:      # the answer starts on a line of its own
+                pv_update(pv, final=True, err=err, env=env)
+            chunks.append(text)
+            if pv_resp is not None:
+                pv_update(pv_resp, text, err=err, env=env)
+            if not knobs["extract"]:
+                if use_color(out, env) and painted != kind:
+                    out.write((RESET if painted is not None else "") + BLUE)
+                    painted = kind
+                out.write(text)
+                out.flush()
+    except KeyboardInterrupt:
+        # No row is written: a truncated response_raw is a thinking block whose
+        # signature never arrived, and replaying one is an error at the API.
+        stamps["t_last"] = stamps["t_done"] = time.time_ns()
+        close_meters()
+        if not knobs["extract"]:            # nothing reached stdout in -x
+            if painted is not None:         # do not leave stdout painted blue
+                out.write(RESET)
+            if chunks and not chunks[-1].endswith("\n"):
+                out.write("\n")
             out.flush()
+        tokens_in, tokens_out = acc.get("usage", (None, None))
+        report(verbosity, 1,
+               summary(model, tokens_in, tokens_out, None, stamps, verbosity),
+               err=err, env=env)
+        die("cancelled", err=err, env=env)
     stamps["t_last"] = time.time_ns()
-    if waiter is not None:      # an error, or a reply with no text at all
-        waiter()
-    if pv is not None:          # a reply that was nothing but reasoning
-        pv_update(pv, final=True, err=err, env=env)
-    if pv_resp is not None:
-        pv_update(pv_resp, final=True, err=err, env=env)
+    close_meters()
     response = "".join(chunks)
     text = response
     if knobs["extract"]:
