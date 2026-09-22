@@ -1,9 +1,10 @@
 """Persistence: the sqlite message tree, attachment blobs, session pointers,
-the parsed configuration cache that config.py fills, and colour policy.
+and the parsed configuration cache that config.py fills.
 
-Everything in dic that touches the disk lives here.  The rest of the program
-sees only the provider-neutral intermediate representation of a conversation:
-a list of turns
+Everything in dic that touches the disk lives here, and nothing that dic
+prints: colour, errors, the cost line and the meters are all tty.py.  The
+rest of the program sees only the provider-neutral intermediate
+representation of a conversation: a list of turns
 
     {"role": "user"|"assistant", "blocks": [block, ...], "raw": <provider json>}
 
@@ -13,7 +14,7 @@ we are about to call again, in which case the adaptor replays it verbatim and
 full fidelity (signatures, reasoning, cache prefix) is preserved; otherwise
 the adaptor converts the blocks and provider-opaque ones are dropped whole.
 """
-import base64, json, mimetypes, os, sqlite3, sys, time
+import base64, json, mimetypes, os, sqlite3, time
 
 CONFIG_DIR = os.path.expanduser("~/.config/fac")
 DB_PATH = os.path.join(CONFIG_DIR, "dic.db")
@@ -94,91 +95,6 @@ SELECT model_id, count(*) AS n, sum(status <> 200) AS errors,
        sum(tokens_input) AS tin, sum(tokens_output) AS tout
   FROM stats GROUP BY model_id ORDER BY n DESC
 """
-
-BLUE = "\033[38;5;39m"       # model output
-ORANGE = "\033[38;5;208m"    # the cost summary
-RED = "\033[31m"             # errors
-THINKING = "\033[38;5;245m"             # reasoning: faded gray on the usual background
-RESET = "\033[0m"
-
-
-def use_color(stream):
-    """Whether to emit ANSI colour on stream.
-
-    $DIC_COLOR (never|auto|always) wins, then $NO_COLOR, then isatty, so a
-    pipe gets clean text without the caller having to ask and a pager can ask
-    for colour anyway.  dic never prints uncoloured text to a terminal: every
-    stream has a meaning (blue output, orange cost, red error).
-    """
-    mode = os.environ.get("DIC_COLOR", "auto")
-    if mode in ("never", "always"):
-        return mode == "always"
-    return stream.isatty() and not os.environ.get("NO_COLOR")
-
-
-def die(msg):
-    """Report an error in red on stderr and exit nonzero."""
-    line = f"dic: {msg}\n"
-    sys.stderr.write(RED + line + RESET if use_color(sys.stderr) else line)
-    sys.exit(1)
-
-
-def report(verbosity, level, msg):
-    """Write msg to stderr in orange when verbosity has reached level.
-
-    All of dic's stderr goes through here, so colour policy and verbosity
-    policy are each stated exactly once.
-
-    >>> report(0, 1, "not printed")
-    """
-    if verbosity < level:
-        return
-    line = f"{msg}\n"
-    sys.stderr.write(ORANGE + line + RESET if use_color(sys.stderr) else line)
-    sys.stderr.flush()
-
-
-def pv_bytes(n):
-    """A byte count as pv prints it: the number, then the unit in three columns.
-
-    >>> pv_bytes(58), pv_bytes(2048)
-    ('58.0  B', '2.0KiB')
-    """
-    value, unit = float(n), "B"
-    for bigger in ("KiB", "MiB", "GiB", "TiB"):
-        if value < 1024:
-            break
-        value, unit = value / 1024, bigger
-    return f"{value:.1f}{unit:>3}"
-
-
-def pv_clock(seconds, tenths=False):
-    """H:MM:SS, as pv -t prints it; optionally to a tenth of a second.
-
-    A tenth is visible movement on a clock nobody is timing anything with,
-    which is the point of the one that runs while dic waits.
-
-    >>> pv_clock(64.7), pv_clock(64.7, tenths=True)
-    ('0:01:04', '0:01:04.7')
-    """
-    whole = int(seconds)
-    out = f"{whole // 3600}:{whole // 60 % 60:02d}:{whole % 60:02d}"
-    return out + f".{int((seconds - whole) * 10)}" if tenths else out
-
-
-def pv_line(name, nbytes, seconds):
-    """One `pv -N name -btr` status line.
-
-    Used for the reasoning stream, which is progress and not content: the
-    meter says how much a model thought without scrolling its answer away.
-
-    >>> pv_line("thinking", 58, 4.0)
-    'thinking: 58.0  B 0:00:04 [14.5  B/s]'
-    """
-    rate = nbytes / seconds if seconds else 0
-    return (f"{name}: {pv_bytes(nbytes)} {pv_clock(seconds)}"
-            f" [{pv_bytes(rate)}/s]")
-
 
 B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 

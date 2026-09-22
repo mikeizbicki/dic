@@ -148,7 +148,7 @@ is not, then moved by `-q` (to 0) or `-v` (each repetition one higher).
 | 2 | and the timings of this call: overhead, ttft, tok/s, total |
 | 3 | and the request body and URL before it is sent |
 
-All of it goes through one `report(verbosity, level, msg)` in `store.py`.
+All of it goes through one `report(verbosity, level, msg)` in `tty.py`.
 
 **TODO:**
 1. Working with tools is currently not implemented, but planned for the future.

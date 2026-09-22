@@ -19,7 +19,8 @@ one stat per file and one query.
 """
 import json, os
 
-from dic.store import CONFIG_DIR, die
+from dic.store import CONFIG_DIR
+from dic.tty import die
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULTS_PATH = os.path.join(HERE, "models.json")
