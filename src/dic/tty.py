@@ -193,11 +193,15 @@ def summary(model, tokens_in, tokens_out, mid, stamps, verbosity):
     'cost: $0.0105 (input: $0.0030, output: $0.0075) --mid=01ABC'
     >>> summary({}, 0, 800, "01ABC", stamps, 2).split(" | ")[1]
     'overhead 10ms, ttft 200ms, 1000 tok/s, total 1100ms'
+    >>> summary({}, None, None, None, stamps, 1)
+    'cost: $0.0000 (input: $0.0000, output: $0.0000)'
     """
     cost_in = (model.get("cost_input") or 0) * (tokens_in or 0) / 1e6
     cost_out = (model.get("cost_output") or 0) * (tokens_out or 0) / 1e6
     line = (f"cost: ${cost_in + cost_out:.4f}"
-            f" (input: ${cost_in:.4f}, output: ${cost_out:.4f}) --mid={mid}")
+            f" (input: ${cost_in:.4f}, output: ${cost_out:.4f})")
+    if mid:                     # a cancelled call has no row, and so no mid
+        line += f" --mid={mid}"
     if verbosity < 2:
         return line
 
