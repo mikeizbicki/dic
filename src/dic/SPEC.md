@@ -87,6 +87,12 @@ and leave the `system` column no longer describing it.
 The full precedence is `-s`, then the inherited prompt, then `DIC_SYSTEM`,
 then the model's own `system` key.
 
+`DIC_MODEL` likewise applies only when starting a *new* conversation.
+With `-c` or `--mid` the model is inherited from the message the conversation
+continues from, so a thread keeps its provider until the caller names another
+one; the full precedence is `-m`, then the inherited `model_id`, then
+`DIC_MODEL`, then the first configured entry whose key is exported.
+
 ### Color
 
 Every stream `dic` writes has a meaning and therefore a color:

@@ -178,7 +178,10 @@ def dic(prompt,
 
     Every knob carries a Flag, so `argument > $DIC_<NAME> > model config` is
     resolved here, once, by options.resolve: the command line and the library
-    cannot disagree about precedence.  `t_start` is the process's first
+    cannot disagree about precedence.  A continuing conversation then supplies
+    the model it last used, so only an explicit -m can switch providers inside
+    a thread, exactly as only -s can rewrite its system prompt.
+    `t_start` is the process's first
     instant when the CLI calls in and defaults to now, and `env`, `out` and
     `err` default to the process's, so a library call supplies none of them.
 
@@ -190,6 +193,7 @@ def dic(prompt,
     env = os.environ if env is None else env
     out = sys.stdout if out is None else out
     err = sys.stderr if err is None else err
+    asked = model                   # -m, before $DIC_MODEL fills it in
     knobs = resolve(locals(), env)
 
     conn = db(env)
@@ -221,6 +225,15 @@ def dic(prompt,
     if not prompt.strip() and not knobs["attachment"]:
         die("no prompt", err=err, env=env)
 
+    prev_mid = knobs["mid"] or (session_read(env) if knobs["cont"] else None)
+    rows = history(conn, prev_mid) if prev_mid else []
+    if prev_mid and not rows:
+        die(f"no such mid: {prev_mid}", err=err, env=env)
+
+    # -m > the model this conversation last used > $DIC_MODEL > the default, so
+    # -c carries on with the same provider unless the caller names another one
+    knobs["model"] = (asked or (rows[-1]["model_id"] if rows else None)
+                      or knobs["model"])
     model = config.resolve(conn, knobs["model"] or config.default_id(conn, env))
     api_type = model.get("api_type", "openai-chat")
     adaptor = load_adaptor(api_type, env)
@@ -231,13 +244,8 @@ def dic(prompt,
     if not api_key:
         die(f"{key_name} is not set", err=err, env=env)
 
-    prev_mid = knobs["mid"] or (session_read(env) if knobs["cont"] else None)
-
     turns, system = [], knobs["system"]
-    if prev_mid:
-        rows = history(conn, prev_mid)
-        if not rows:
-            die(f"no such mid: {prev_mid}", err=err, env=env)
+    if rows:
         turns = turns_from_rows(conn, rows, api_type)
         if system is None:
             system = rows[-1]["system"]

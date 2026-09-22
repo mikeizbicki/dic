@@ -150,8 +150,13 @@ def db(env):
 
 
 def history(conn, mid):
-    """The ancestor chain of mid, oldest first (one recursive query, one trip)."""
-    columns = "mid,user,system,response,response_raw,prev_mid,api_type,attachments"
+    """The ancestor chain of mid, oldest first (one recursive query, one trip).
+
+    `model_id` is carried so that -c and --mid can continue the thread with the
+    model that produced its last turn, unless -m names another.
+    """
+    columns = ("mid,user,system,response,response_raw,prev_mid,model_id,"
+               "api_type,attachments")
     qualified = ",".join(f"m.{c}" for c in columns.split(","))
     rows = conn.execute(
         f"WITH RECURSIVE chain({columns}) AS ("
