@@ -22,6 +22,12 @@ import base64, hashlib, json, mimetypes, os, sqlite3, time
 
 from dic.tty import DicError
 
+# The schema this file writes, stamped into the database's user_version.  No
+# version of dic migrates another one: dic is pre-release, so an older file is
+# not upgraded but reported with the rm that removes it, because a database
+# that is only nearly right fails later as a confusing sqlite error.
+SCHEMA_VERSION = 1
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
     mid TEXT PRIMARY KEY,
@@ -247,12 +253,27 @@ def db_path(env):
 
 
 def db(env):
-    """Open the database named by env, creating the append-only schema if needed."""
+    """Open the database named by env, creating the schema when it is new.
+
+    There are no migrations: a file written against any other version of this
+    schema is not upgraded, it is deleted.  The version the file carries must
+    be the one this build writes, and a file that disagrees is an error naming
+    that file and the rm that fixes it -- a database that is only nearly right
+    would otherwise fail somewhere later as a confusing sqlite error.
+    """
     path = db_path(env)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    stamped = conn.execute("SELECT 1 FROM sqlite_master"
+                           " WHERE type='table' AND name='messages'").fetchone()
+    if stamped and version != SCHEMA_VERSION:
+        conn.close()
+        raise DicError(f"{path}: schema mismatch: found version {version},"
+                       f" expected {SCHEMA_VERSION}; remove it with: rm {path}")
     conn.executescript(SCHEMA)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return conn
 
 
