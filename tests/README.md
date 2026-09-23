@@ -25,5 +25,10 @@ The rules:
   cannot see startup, because pytest has paid every import before the test
   runs; `test_startup.py` therefore runs a real `python -m dic`.  It is
   `@pytest.mark.slow`, so the default run leaves it out.
+* **one fixture set per shape of protocol.**  `test_client.py`'s server answers
+  every POST with SSE and is the right server for every protocol that is one
+  request and one stream; `test_multimedia.py` answers GET and PUT too, because
+  a job that is submitted, polled and downloaded is a different shape and not
+  a different assertion.
 
 If a test needs three sentences of setup to be believed, the setup is the bug.

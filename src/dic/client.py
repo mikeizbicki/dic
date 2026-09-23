@@ -426,10 +426,21 @@ def dic(prompt,
             report(verbosity, 1, f"partial output left at {pending}",
                    err=err, env=env)
         raise
-    except DicError:
-        # a call() adaptor reports a failure by raising, so nothing has ended
-        # the line it may have left mid-repaint; close it before die() writes
+    except DicError as e:
+        # a call() adaptor reports a failure by raising, so the transport that
+        # would have written the row never ran and the line it leaves may be
+        # mid-repaint: close the line, and record the attempt with the same -1
+        # a stream that failed after a 200 gets, so a job that never answered
+        # is still countable and its row is never continued by -c
+        stamps["t_last"] = stamps["t_done"] = time.time_ns()
         close_meters()
+        pending = sink.pending()
+        sink.abandon()
+        usage, cost, items = billing()
+        insert(ulid(), "".join(chunks), adaptor.finish(acc),
+               [{"path": pending, "mime_type": mime}] if pending else [],
+               usage, cost, items, stamps.get("status") or -1, str(e))
+        conn.commit()
         raise
     stamps["t_last"] = time.time_ns()
     close_meters()

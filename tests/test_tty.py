@@ -76,3 +76,45 @@ def test_the_wait_clock_counts_in_tenths_and_closes_its_own_line(stream, monkeyp
     text = err.getvalue()
     assert text.startswith("\rttft: 0:00:00.")    # repainted in place, not scrolled
     assert text.endswith("\n") and text.count("\n") == 1
+
+
+def test_status_ends_the_clock_and_keeps_one_line_on_stderr(stream, monkeypatch):
+    """A poll status supersedes the bare clock and repaints the same line.
+
+    fal and openai-videos poll for minutes, so the line the wait clock started
+    is the line their status goes on: the clock is finished, each status is
+    painted over it, and the line is closed once when the caller is done.
+    """
+    monkeypatch.setattr(tty, "WAIT_DELAY", 0)
+    err = stream()
+    line = tty.Line(err=err, env={})
+    line.wait()
+    time.sleep(0.3)                          # long enough for the clock to paint
+
+    line.status("fal: IN_QUEUE 0:00:01")
+    line.status("fal: COMPLETED 0:00:02")
+    line.close()
+
+    text = err.getvalue()
+    assert "ttft: 0:00:00." in text           # the clock was showing, and stopped
+    assert "fal: IN_QUEUE" in text and "fal: COMPLETED" in text
+    assert text.endswith("\n") and text.count("\n") == 2   # the clock's, then ours
+
+
+def test_close_of_a_line_that_never_painted_writes_nothing(stream):
+    """A fast call shows no clock, so there is no line to close."""
+    err = stream()
+    tty.Line(err=err, env={}).close()
+    assert err.getvalue() == ""
+
+
+def test_a_status_without_a_clock_paints_and_closes_once(stream):
+    """A job that starts before WAIT_DELAY paints the status alone."""
+    err = stream()
+    line = tty.Line(err=err, env={})
+    line.status("videos: in_progress 0:00:00")
+    line.close()
+
+    text = err.getvalue()
+    assert text.startswith("\rvideos: in_progress")
+    assert text.endswith("\n") and text.count("\n") == 1
