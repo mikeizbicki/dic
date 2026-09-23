@@ -194,27 +194,54 @@ def pv_update(state, text=None, final=False, err=None, env=None):
         err.flush()
 
 
-def summary(model, tokens_in, tokens_out, mid, stamps, verbosity):
+def label(item):
+    """One priced item as the cost line names it: 'in', 'out', 'cache-read'.
+
+    A refinement of a direction is named by the refinement, because that is the
+    part of it worth reading; a bare direction keeps its own name, because
+    there is nothing else it could mean.
+
+    >>> label({"key": "in.cache_read"}), label({"key": "out"})
+    ('cache-read', 'out')
+    """
+    head, _, tail = item["key"].partition(".")
+    return (tail or head).replace("_", "-")
+
+
+def summary(usage, items, mid, stamps, verbosity):
     """The one-line cost and mid report written to stderr.
 
-    Costs are per million tokens, as configured; a model with no configured
-    price simply reports zero.  At -v the same line carries the timings,
-    which is what a human wants while an ad-hoc `dic --stats` is aggregate.
+    `items` is what `price.rate` made of the call: one entry per usage name a
+    price rule priced, with the rule that priced it, the quantity, the rate and
+    the cost.  Their sum is the only total dic ever prints, and a model with no
+    price rules has no items and costs nothing.
+
+    At -v the same line carries the timings of the call and at -vv the
+    itemization behind the total, which is what a human wants while an ad-hoc
+    `dic --stats` is an aggregate over many calls.
 
     >>> stamps = {"t_start": 0, "t_request": 10**7, "t_first": 2 * 10**8,
     ...           "t_last": 10**9, "t_done": 11 * 10**8}
-    >>> summary({"cost_input": 3.0, "cost_output": 15.0}, 1000, 500, "01ABC",
-    ...         stamps, 1)
+    >>> items = [{"rule": "in", "key": "in", "qty": 1000, "rate": 3.0,
+    ...           "cost": 0.003},
+    ...          {"rule": "out", "key": "out", "qty": 500, "rate": 15.0,
+    ...           "cost": 0.0075}]
+    >>> summary({"in": 1000, "out": 500}, items, "01ABC", stamps, 1)
     'cost: $0.0105 (input: $0.0030, output: $0.0075) --mid=01ABC'
-    >>> summary({}, 0, 800, "01ABC", stamps, 2).split(" | ")[1]
-    'overhead 10ms, ttft 200ms, 1000 tok/s, total 1100ms'
-    >>> summary({}, None, None, None, stamps, 1)
+    >>> summary({}, [], None, stamps, 1)
     'cost: $0.0000 (input: $0.0000, output: $0.0000)'
+    >>> summary({"out": 800}, [], "01ABC", stamps, 2).split(" | ")[1]
+    'overhead 10ms, ttft 200ms, 1000 tok/s, total 1100ms'
+    >>> summary({"in": 1000, "out": 500}, items, None, stamps, 2).split(" | ")[0]
+    'cost: $0.0105 (in 1000@3, out 500@15)'
     """
-    cost_in = (model.get("cost_input") or 0) * (tokens_in or 0) / 1e6
-    cost_out = (model.get("cost_output") or 0) * (tokens_out or 0) / 1e6
-    line = (f"cost: ${cost_in + cost_out:.4f}"
-            f" (input: ${cost_in:.4f}, output: ${cost_out:.4f})")
+    def cost_of(direction):
+        return sum(i["cost"] for i in items if i["key"].split(".")[0] == direction)
+
+    money = (", ".join(f"{label(i)} {i['qty']}@{i['rate']:g}" for i in items)
+             if verbosity >= 2 and items
+             else f"input: ${cost_of('in'):.4f}, output: ${cost_of('out'):.4f}")
+    line = f"cost: ${sum(i['cost'] for i in items):.4f} ({money})"
     if mid:                     # a cancelled call has no row, and so no mid
         line += f" --mid={mid}"
     if verbosity < 2:
@@ -224,7 +251,8 @@ def summary(model, tokens_in, tokens_out, mid, stamps, verbosity):
         return ((stamps.get(end) or 0) - (stamps.get(start) or 0)) / 1e6
 
     stream_ms = ms("t_first", "t_last")
-    rate = (tokens_out or 0) / (stream_ms / 1000) if stream_ms else 0
+    counted = (usage.get("out") or 0) + (usage.get("out.reasoning") or 0)
+    speed = counted / (stream_ms / 1000) if stream_ms else 0
     return line + (f" | overhead {ms('t_start', 't_request'):.0f}ms,"
                    f" ttft {ms('t_start', 't_first'):.0f}ms,"
-                   f" {rate:.0f} tok/s, total {ms('t_start', 't_done'):.0f}ms")
+                   f" {speed:.0f} tok/s, total {ms('t_start', 't_done'):.0f}ms")

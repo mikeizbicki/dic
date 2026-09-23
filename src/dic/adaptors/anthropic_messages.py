@@ -9,6 +9,8 @@ Exports PATH, auth, build, parse, finish; see adaptors/openai_chat.py.
 """
 import base64, json
 
+from dic.store import tokens
+
 PATH = "/messages"
 
 
@@ -89,7 +91,14 @@ def parse(event, acc):
     >>> parse({"type": "message_delta", "usage": {"output_tokens": 1}}, acc)
     ('', '')
     >>> acc["usage"], acc["raw"]
-    ((5, 1), [{'type': 'text', 'text': 'hi'}])
+    ({'in': 5, 'out': 1}, [{'type': 'text', 'text': 'hi'}])
+    >>> acc = {}
+    >>> parse({"type": "message_start", "message": {"usage":
+    ...        {"input_tokens": 10, "cache_read_input_tokens": 900,
+    ...         "cache_creation_input_tokens": 90, "output_tokens": 0}}}, acc)
+    ('', '')
+    >>> acc["usage"]
+    {'in': 10, 'in.cache_read': 900, 'in.cache_write': 90}
     >>> acc = {}
     >>> parse({"type": "content_block_start",
     ...        "content_block": {"type": "thinking", "thinking": ""}}, acc)
@@ -123,8 +132,14 @@ def parse(event, acc):
                         f"{error.get('message') or 'stream failed'}")
         return "", ""
     if kind == "message_start":
+        # input is reported as three separate quantities rather than as a total
+        # with subsets inside it, so the three are taken exactly as they come
         usage = (event.get("message") or {}).get("usage") or {}
-        acc["usage"] = (usage.get("input_tokens"), usage.get("output_tokens"))
+        acc["usage"] = tokens(**{
+            "in": usage.get("input_tokens"),
+            "in.cache_read": usage.get("cache_read_input_tokens"),
+            "in.cache_write": usage.get("cache_creation_input_tokens"),
+            "out": usage.get("output_tokens")})
     elif kind == "content_block_start":
         blocks.append(dict(event.get("content_block") or {}))
     elif kind == "content_block_delta" and blocks:
@@ -148,9 +163,11 @@ def parse(event, acc):
             except ValueError:
                 block["input"] = {}        # a tool call cut off mid-arguments
     elif kind == "message_delta":
+        # the output count is cumulative, and a thinking model's thinking is
+        # part of it, so it is the whole of the answer rather than a subset
         usage = event.get("usage") or {}
-        acc["usage"] = (acc.get("usage", (None, None))[0],
-                        usage.get("output_tokens"))
+        if usage.get("output_tokens") is not None:
+            acc.setdefault("usage", {})["out"] = usage["output_tokens"]
         acc["stop"] = ((event.get("delta") or {}).get("stop_reason")
                        or acc.get("stop"))
     return "", ""

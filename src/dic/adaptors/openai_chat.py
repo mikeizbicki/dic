@@ -9,7 +9,7 @@ Every adaptor module exports the same five names:
     parse(event, acc)  one SSE event -> (text, kind) to print, state in acc
     finish(acc)     acc -> the JSON stored in messages.response_raw
 """
-from dic.store import data_url
+from dic.store import data_url, openai_usage
 
 PATH = "/chat/completions"
 
@@ -87,7 +87,7 @@ def parse(event, acc):
     >>> parse({"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 1}}, acc)
     ('', '')
     >>> acc["usage"]
-    (3, 1)
+    {'in': 3, 'out': 1}
     """
     if event.get("error"):
         # a failure reported as a data frame rather than as a status code
@@ -97,7 +97,7 @@ def parse(event, acc):
         return "", ""
     usage = event.get("usage")
     if usage:
-        acc["usage"] = (usage.get("prompt_tokens"), usage.get("completion_tokens"))
+        acc["usage"] = openai_usage(usage)
     text, kind = "", ""
     for choice in event.get("choices") or []:
         if choice.get("finish_reason"):

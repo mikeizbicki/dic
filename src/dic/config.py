@@ -87,6 +87,31 @@ def merge(base, over):
     return out
 
 
+def price_table(cfg):
+    """cfg's price rules, with cost_input and cost_output expanded into them.
+
+    A rule is named by the usage name it rates, or by a prefix of one, in
+    which case it rates everything under that prefix: 'in' prices every input
+    token and 'in.cache_read' prices only the ones a provider served from its
+    cache.  The two older keys are kept because every config file in the wild
+    states its price that way; a rule already in `price` for the same name
+    wins, so a file may restate one rate of one model and nothing else.
+
+    >>> price_table({"cost_input": 3.0, "cost_output": 15.0})["in"]
+    {'rate': 3.0}
+    >>> price_table({"cost_input": 3.0, "price": {"in": {"rate": 5.0}}})["in"]
+    {'rate': 5.0}
+    >>> price_table({})
+    {}
+    """
+    table = {name: rule for name, rule in (cfg.get("price") or {}).items() if rule}
+    for name, legacy in (("in", "cost_input"), ("out", "cost_output")):
+        if cfg.get(legacy) is None:
+            continue
+        table[name] = {"rate": cfg[legacy], **(table.get(name) or {})}
+    return table
+
+
 def sources(env, models_file=None):
     """The configuration files that exist, weakest first.
 
@@ -223,6 +248,7 @@ def resolve(conn, model_id):
     cfg = resolved_keys(conn, model_id)
     if not cfg.get("model_name"):
         raise DicError(f"{model_id}: no model_name configured (try `dic --models`)")
+    cfg["price"] = price_table(cfg)
     cfg["model_id"] = model_id
     return cfg
 

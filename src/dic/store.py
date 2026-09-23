@@ -13,6 +13,10 @@ where a block is {"type": "text"|"image"|"tool_call"|"tool_result"|"thinking",
 we are about to call again, in which case the adaptor replays it verbatim and
 full fidelity (signatures, reasoning, cache prefix) is preserved; otherwise
 the adaptor converts the blocks and provider-opaque ones are dropped whole.
+
+A call's other output is its usage: a disjoint dict of what the API counted, in
+the names a price table has rules for, stored beside the cost those rules made
+of it.  `tokens` and `openai_usage` are how an adaptor builds one.
 """
 import base64, json, mimetypes, os, sqlite3, time
 
@@ -29,22 +33,34 @@ CREATE TABLE IF NOT EXISTS messages (
     api_type TEXT,
     status INTEGER,              -- HTTP status, NULL if we never got one
     error TEXT,                  -- the server's body when status <> 200
-    tokens_input INTEGER,
-    tokens_output INTEGER,
-    tokens_reasoning INTEGER,    -- billed but unprinted; tok/s needs it
+    usage TEXT,                  -- disjoint counts: "in.cache_read" -> 8000
+    cost REAL,                   -- dollars billed, as rated at the time
+    cost_items TEXT,             -- the price rules that produced cost
+    price_hash TEXT,             -- which price table they were read from
     t_start INTEGER,             -- ns, before any import but `time`
     t_connect INTEGER,           -- TCP+TLS up
     t_request INTEGER,           -- request body written: end of our overhead
     t_headers INTEGER,           -- response headers in: queue + prefill start
     t_first INTEGER,             -- first token printed
     t_last INTEGER,              -- stream closed
-    t_done INTEGER);             -- row written, just before exit
+    t_done INTEGER,              -- row written, just before exit
+    -- The token counts stay, as views onto usage: a count that is a function
+    -- of a count is not stored, and everything outside this file goes on
+    -- reading the three columns it always did.  The paths are quoted because
+    -- a usage name contains a dot, which unquoted means "go one level down".
+    tokens_input INTEGER GENERATED ALWAYS AS
+        (json_extract(usage, '$."in"')) VIRTUAL,
+    tokens_output INTEGER GENERATED ALWAYS AS
+        (json_extract(usage, '$."out"')) VIRTUAL,
+    tokens_reasoning INTEGER GENERATED ALWAYS AS
+        (json_extract(usage, '$."out.reasoning"')) VIRTUAL);
 CREATE INDEX IF NOT EXISTS messages_prev_mid ON messages(prev_mid);
 -- Every derived number is a subtraction of two stored instants, so the view
 -- is a view: nothing is materialized, nothing can go stale, and no python
 -- computes a statistic.  A provider is the head of the model_id chain.
 CREATE VIEW IF NOT EXISTS stats AS SELECT
     mid, model_id, api_type, status,
+    cost, price_hash,
     substr(model_id, 1, instr(model_id || '+', '+') - 1) AS provider,
     t_start / 1000000000 AS time,
     (t_connect - t_start)  / 1e6 AS ms_connect,
@@ -78,6 +94,16 @@ CREATE TABLE IF NOT EXISTS config_meta (
     size INTEGER);
 """
 
+# The columns a row is written with, in the order messages declares them.  The
+# generated columns are not among them and cannot be: sqlite refuses to have
+# them written, which is the point of them.
+COLUMNS = ("mid", "user", "system", "response", "response_raw", "prev_mid",
+           "attachments", "model_id", "api_type", "status", "error", "usage",
+           "cost", "cost_items", "price_hash", "t_start", "t_connect",
+           "t_request", "t_headers", "t_first", "t_last", "t_done")
+INSERT = (f"INSERT INTO messages ({', '.join(COLUMNS)})"
+          f" VALUES ({', '.join('?' * len(COLUMNS))})")
+
 # What `dic --stats` prints: usage frequency and runtime performance are the
 # same aggregate over the same rows, so they are one query.  Averages ignore
 # failed calls, which are counted separately.
@@ -90,6 +116,8 @@ SELECT model_id, count(*) AS n, sum(status <> 200) AS errors,
        round(avg(tok_per_sec) FILTER (WHERE status = 200), 1) AS tok_s,
        round(avg(ms_total)    FILTER (WHERE status = 200), 1) AS total,
        sum(tokens_input) AS tin, sum(tokens_output) AS tout
+       , round(sum(cost), 4) AS cost
+       , count(DISTINCT price_hash) AS price_versions
   FROM stats GROUP BY model_id ORDER BY n DESC
 """
 
@@ -117,6 +145,49 @@ def data_url(block):
     """
     encoded = base64.b64encode(block["data"]).decode()
     return f"data:{block['mime_type']};base64,{encoded}"
+
+
+def tokens(**counts):
+    """The counts that happened, as a usage dict: name -> quantity.
+
+    Names are dotted and disjoint: 'in' is the input a provider charged at its
+    usual rate and 'in.cache_read' is the part it served from its cache, so no
+    two names describe the same token and a cost is a plain sum over the names
+    a price rule matches.  A count that is missing or zero is left out, because
+    a usage dict should say what happened and not what did not.
+
+    >>> tokens(**{"in": 1000, "out": 0, "in.cache_read": None})
+    {'in': 1000}
+    """
+    return {name: qty for name, qty in counts.items() if qty}
+
+
+def openai_usage(usage):
+    """An OpenAI usage object as a disjoint dict, its subsets split out.
+
+    Both OpenAI-shaped protocols report what was cached and what was reasoning
+    *inside* the totals they also report, so the subsets have to be subtracted
+    here: leaving them in would charge a cached prompt twice, once at each of
+    the two rates that are supposed to describe different tokens.
+
+    >>> openai_usage({"prompt_tokens": 1000, "completion_tokens": 500,
+    ...               "prompt_tokens_details": {"cached_tokens": 800},
+    ...               "completion_tokens_details": {"reasoning_tokens": 200}})
+    {'in': 200, 'in.cache_read': 800, 'out': 300, 'out.reasoning': 200}
+    >>> openai_usage({})
+    {}
+    """
+    prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+    completion = usage.get("completion_tokens", usage.get("output_tokens"))
+    cached = (usage.get("prompt_tokens_details")
+              or usage.get("input_tokens_details") or {}).get("cached_tokens")
+    reasoning = (usage.get("completion_tokens_details")
+                 or usage.get("output_tokens_details") or {}).get("reasoning_tokens")
+    return tokens(**{
+        "in": None if prompt is None else prompt - (cached or 0),
+        "in.cache_read": cached,
+        "out": None if completion is None else completion - (reasoning or 0),
+        "out.reasoning": reasoning})
 
 
 # ---------------------------------------------------------------- sqlite

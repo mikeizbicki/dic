@@ -6,7 +6,7 @@ are encrypted and meaningless to dic) can be replayed untouched.
 
 Exports PATH, auth, build, parse, finish; see adaptors/openai_chat.py.
 """
-from dic.store import data_url
+from dic.store import data_url, openai_usage
 
 PATH = "/responses"
 
@@ -77,7 +77,7 @@ def parse(event, acc):
     ...         "usage": {"input_tokens": 2, "output_tokens": 1}}}, acc)
     ('', '')
     >>> acc["usage"], acc["raw"]
-    ((2, 1), [{'type': 'message'}])
+    ({'in': 2, 'out': 1}, [{'type': 'message'}])
     """
     kind = event.get("type")
     if kind in ("response.reasoning_summary_text.delta",
@@ -94,8 +94,7 @@ def parse(event, acc):
     if kind in ("response.completed", "response.incomplete"):
         resp = event.get("response") or {}
         acc["raw"] = resp.get("output") or []
-        usage = resp.get("usage") or {}
-        acc["usage"] = (usage.get("input_tokens"), usage.get("output_tokens"))
+        acc["usage"] = openai_usage(resp.get("usage") or {})
         if kind == "response.incomplete":
             acc["stop"] = (resp.get("incomplete_details") or {}).get("reason")
     return "", ""

@@ -151,7 +151,7 @@ is not, then moved by `-q` (to 0) or `-v` (each repetition one higher).
 | ----- | ------ |
 | 0 | errors only |
 | 1 | the cost and `--mid` line |
-| 2 | and the timings of this call: overhead, ttft, tok/s, total |
+| 2 | and the timings of this call: overhead, ttft, tok/s, total, and the itemized cost |
 | 3 | and the request body and URL before it is sent |
 
 All of it goes through one `report(verbosity, level, msg)` in `tty.py`.
@@ -217,9 +217,19 @@ The messages table has the following columns:
 - `model_id`: the `model_id` used to generate the response
 - `api_type`: the wire protocol used to generate the response (see "Model configuration")
 - `status`, `error`: the HTTP status of the call and the server's message when it was not 200
-- `tokens_input`, `tokens_output`: token counts reported by the API, if any
-- `tokens_reasoning`: tokens billed but never printed, if the API reports them;
-  without this a thinking model's tokens/second is wrong
+- `usage`: the quantities the API reported, as a JSON object of disjoint dotted
+  names: `in` is the input charged at the usual rate, `in.cache_read` the part
+  served from a cache, `out.reasoning` the output that was billed but never
+  printed.  Disjoint, so that a cost is a plain sum over the names a rule prices,
+  and so that no token is charged twice however many rules name it.
+- `cost`, `cost_items`, `price_hash`: what the call was billed, the per-rule
+  breakdown that produced it, and the price table it was read from.  A price
+  table lives in a config file, which is edited; a bill is not, so it is
+  *stored* when the call ends and never recomputed.
+- `tokens_input`, `tokens_output`, `tokens_reasoning`: the three counts a price
+  is usually quoted in, as `GENERATED` `VIRTUAL` columns over `usage`.  The same
+  rule as `time` below: a value that is a function of another value is not
+  stored, and nothing outside sqlite needs to know that these are views.
 - `t_start`, `t_connect`, `t_request`, `t_headers`, `t_first`, `t_last`, `t_done`:
   nanoseconds since the epoch at each phase boundary of the call (see "Timing")
 
@@ -268,7 +278,7 @@ milliseconds, and each rate:
 
 ```sql
 CREATE VIEW stats AS SELECT
-    mid, model_id, api_type, status,
+    mid, model_id, api_type, status, cost, price_hash,
     substr(model_id, 1, instr(model_id || '+', '+') - 1) AS provider,
     t_start / 1000000000 AS time,
     (t_request - t_start) / 1e6 AS ms_overhead,
@@ -280,8 +290,11 @@ CREATE VIEW stats AS SELECT
 `dic --stats` is then a single `GROUP BY model_id` over that view: frequency of use
 (`count(*)`) and runtime performance (`avg(ms_ttft)`, `avg(tok_per_sec)`, ...) are
 the same aggregate over the same rows, so they are one query, with averages
-restricted to `status = 200`.  Python joins the resulting cells with tabs and
-computes nothing; the output is therefore already `sort`- and `awk`-shaped.
+restricted to `status = 200`.  `sum(cost)` is the historic total, added up and
+never recomputed, with `count(DISTINCT price_hash)` beside it so that a model
+whose rows were rated under two different tables is visible rather than averaged.
+Python joins the resulting cells with tabs and computes nothing; the output is
+therefore already `sort`- and `awk`-shaped.
 This query scans `messages` and will grow slower with the table, which is
 acceptable: `--stats` is never on the latency path.
 
@@ -402,8 +415,10 @@ Optional keys are:
 1. `api_type`: which wire protocol to speak; defaults to `openai-chat`
 2. `options`: a mapping merged verbatim into the JSON request body
 3. `headers`: a mapping merged verbatim into the HTTP request headers
-4. `cost_input` and `cost_output`: the price per million tokens for the input and output of the API call.
-   At this point, batching and other types of cost-saving measures are not supported.
+4. `price`: the rules that rate this model's `usage` (see "Prices").
+   `cost_input` and `cost_output` are the two rules every file in the wild
+   states, kept as shorthand for an `in` and an `out` rule at the same rate;
+   a rule in `price` for the same name wins over them.
 5. `system`: a default system prompt for this model, used when the conversation is
    new and neither `-s` nor `DIC_SYSTEM` is given.
    Unlike `DIC_SYSTEM` this is per-model, which is what a model-specific house style needs.
@@ -415,6 +430,47 @@ Most new provider features are new JSON fields or new beta headers,
 so these can be used before `dic` knows anything about them.
 `dic` must not validate them: unknown keys are forwarded to the API and the API is allowed to reject them.
 Client-side validation is what makes tools obsolete on release day.
+
+### Prices
+
+How much a call cost is a function of two things, and `dic` keeps them apart:
+the *quantities* in `usage`, and the *table* that turns them into dollars.
+Quantities can be read again forever; tables are edited, so the dollars a table
+produced are stored with the row and never recomputed.  There is no `--reprice`.
+
+A price table is one object of named rules:
+
+```json
+"price": {
+  "in":            {"rate": 3.00},
+  "in.cache_read": {"rate": 0.30},
+  "in.long":       {"rate": 6.00, "key": "in", "when": "in_total > 200000"},
+  "out":           {"rate": 15.00},
+  "out.batch":     {"rate": 7.50, "key": "out", "tier": "batch"}
+}
+```
+
+A rule is named by the `usage` name it rates, or by a prefix of one, in which
+case it rates everything under that prefix: `in` prices every input token and
+`in.cache_read` prices only the ones served from a cache.  A rule may instead
+say `key`, naming the usage name it rates itself, which is what a rule that only
+prices *part* of a request's tokens needs -- the second rate for a prompt past
+the long context threshold states the same key as the first and distinguishes
+itself with `when`.
+
+`unit` says what one of the quantity is.  It defaults to `token`, which is
+quoted per million, like `cost_input` always was; any other unit is quoted per
+one, so an image at `$0.04` is one rule and nothing else in the table changes.
+
+Batching, flex and priority tiers, and the long context threshold are all
+properties of the *request* and not of a token in it, so they are matched
+against request facts -- `tier`, and the totals `in_total` and `out_total` --
+and not against the name.  `when` is a python expression over those facts,
+evaluated with no builtins; it is a config file, exactly as trusted as the
+adapters escape hatch and no more.
+
+The most specific matching rule wins.  Two rules that match equally well at two
+different rates are an error, because a silently picked price is a wrong invoice.
 
 ### The config cache
 

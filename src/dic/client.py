@@ -18,10 +18,11 @@ entry point.
 """
 import http.client, json, os, re, sys, time, urllib.parse
 
-from dic import config
+from dic import config, price
 from dic.options import flag, resolve
-from dic.store import (STATS, config_dir, db, history, normalize, session_read,
-                       session_write, store_attachment, turns_from_rows, ulid)
+from dic.store import (INSERT, STATS, config_dir, db, history, normalize,
+                       session_read, session_write, store_attachment,
+                       turns_from_rows, ulid)
 from dic.tty import (BLUE, RESET, THINKING, DicError, pv_update, pv_waiter,
                      report, summary, use_color)
 
@@ -38,12 +39,15 @@ class Reply:
     conversation, which is how `-c` and `--mid` are exercised in one process.
     `status` is None for a call that never reached the network, which is what
     --models, --aliases and --stats are.
+    `usage` is the quantities the API reported, and only from those does the
+    caller see what the call cost, because a price is read from the config as
+    it is now and recorded on the row rather than returned.
     """
     __slots__ = ("text", "raw", "mid", "model_id", "api_type", "status",
                  "error", "usage", "timings")
 
     def __init__(self, text="", raw=None, mid=None, model_id=None,
-                 api_type=None, status=None, error=None, usage=(None, None),
+                 api_type=None, status=None, error=None, usage=None,
                  timings=None):
         self.text = text
         self.raw = raw
@@ -52,7 +56,7 @@ class Reply:
         self.api_type = api_type
         self.status = status
         self.error = error
-        self.usage = usage
+        self.usage = usage or {}
         self.timings = timings or {}
 
 
@@ -185,6 +189,11 @@ def dic(prompt,
     instant when the CLI calls in and defaults to now, and `env`, `out` and
     `err` default to the process's, so a library call supplies none of them.
 
+    What the call's usage cost is rated here, once, when the reply has ended:
+    a price table is a config file, and the next invocation may have edited it,
+    so the itemization is stored with the row instead of being recomputed by
+    whoever reads it.  A call is never repriced.
+
     Returns a Reply, writing the answer to `out` and colour, the cost line
     and the meters to `err`.  A failure raises DicError, after the attempt
     has been recorded, so a failed call is countable too, and a ^C comes
@@ -267,7 +276,8 @@ def dic(prompt,
                             + [{"type": "text", "text": prompt}]})
     turns = normalize(turns)
 
-    body = adaptor.build(model, turns, system, options(model, knobs["option"]))
+    opts = options(model, knobs["option"])
+    body = adaptor.build(model, turns, system, opts)
     headers = {"content-type": "application/json", "accept": "text/event-stream"}
     headers.update(adaptor.auth(api_key))
     headers.update(model.get("headers") or {})
@@ -296,6 +306,21 @@ def dic(prompt,
             pv_update(pv, final=True, err=err, env=env)
         if pv_resp is not None:
             pv_update(pv_resp, final=True, err=err, env=env)
+
+    def billing():
+        """The usage the API reported and what the price table makes of it.
+
+        One place, reached from both the reply and the cancelled path, so a
+        ^C's cost line and the reply's are the same numbers.  The itemization
+        comes back with the total because it is what gets stored: the rule
+        that priced each count is not recoverable from the config, which the
+        next invocation may already have edited.
+        """
+        usage = acc.get("usage") or {}
+        facts = price.facts(usage, acc.get("tier") or opts.get("service_tier")
+                            or "default")
+        total, items = price.rate(model, usage, facts)
+        return usage, total, items
 
     try:
         for event in events(model["api_base"], adaptor.PATH, headers, body, stamps):
@@ -341,9 +366,9 @@ def dic(prompt,
             if chunks and not chunks[-1].endswith("\n"):
                 out.write("\n")
             out.flush()
-        tokens_in, tokens_out = acc.get("usage", (None, None))
+        usage, _, items = billing()
         report(verbosity, 1,
-               summary(model, tokens_in, tokens_out, None, stamps, verbosity),
+               summary(usage, items, None, stamps, verbosity),
                err=err, env=env)
         raise
     stamps["t_last"] = time.time_ns()
@@ -364,14 +389,15 @@ def dic(prompt,
             out.write("\n")
             text += "\n"
 
-    tokens_in, tokens_out = acc.get("usage", (None, None))
+    usage, cost, items = billing()
     mid = ulid()
     stamps["t_done"] = time.time_ns()
-    conn.execute(f"INSERT INTO messages VALUES ({','.join('?' * 21)})",
+    conn.execute(INSERT,
                  (mid, prompt, system, response, json.dumps(adaptor.finish(acc)),
                   prev_mid, json.dumps([att["aid"] for att in attached]),
                   model["model_id"], api_type, stamps["status"], stamps["error"],
-                  tokens_in, tokens_out, acc.get("tokens_reasoning"),
+                  json.dumps(usage) if usage else None, cost, json.dumps(items),
+                  price.price_hash(model),
                   stamps["t_start"], stamps.get("t_connect"), stamps.get("t_request"),
                   stamps.get("t_headers"), stamps.get("t_first"), stamps["t_last"],
                   stamps["t_done"]))
@@ -393,9 +419,9 @@ def dic(prompt,
         # cut off, and nothing else about the call says so
         report(verbosity, 1, f"truncated: {acc['stop']}", err=err, env=env)
     report(verbosity, 1,
-           summary(model, tokens_in, tokens_out, mid, stamps, verbosity),
+           summary(usage, items, mid, stamps, verbosity),
            err=err, env=env)
     return Reply(text=text, raw=adaptor.finish(acc), mid=mid,
                  model_id=model["model_id"], api_type=api_type,
                  status=stamps["status"], error=stamps["error"],
-                 usage=(tokens_in, tokens_out), timings=stamps)
+                 usage=usage, timings=stamps)
