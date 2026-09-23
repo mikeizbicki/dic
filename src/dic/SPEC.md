@@ -191,21 +191,13 @@ All of it goes through one `report(verbosity, level, msg)` in `tty.py`.
 2. Many providers allow prompt caching to reduce cost of input tokens.
     It's not clear to me the best way to structure this from the cli or in the various config files.
 
-3. Eventually we should be able to generate images/audio/video/etc using other API endpoints.
-    The existing adaptors framework will need to be lightly adjusted to support these additional output types and a way for specifying file output or mimetype will be needed,
-    but the biggest problem will be finding a good way to support pricing (which can have very different structures for different providers) and for handling non-sync APIs.
-    For example video files often take several minutes to generate, and fal.ai uses a polling strategy in its API to check on status.
-
-4. There is no cross-provider standard for listing models or their prices.
+3. There is no cross-provider standard for listing models or their prices.
     `GET /v1/models` is OpenAI-shaped and served by Groq, Together, vLLM and OpenRouter,
     but only OpenRouter reports `pricing`, and Anthropic reports none.
     A future `dic --sync` should hit each provider's list endpoint and *generate* the
     entries under a provider id, never fetching prices on the latency path.
 
-5. Eventually this system should be usable as a library and support async requests to allow many API calls to happen concurrently.
-    We want these async requests to simultaneously not complicate the code too much and not slow down the CLI interface where time to first token is critical.
-
-6. The `stats` view has no notion of a percentile, only averages and maxima,
+4. The `stats` view has no notion of a percentile, only averages and maxima,
     because sqlite has no `percentile()` without an extension.
     A median is expressible with a window function over the view and should replace
     `avg` once the query is worth the length.
