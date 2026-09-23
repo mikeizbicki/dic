@@ -343,6 +343,11 @@ def dic(prompt,
         die("cancelled", err=err, env=env)
     stamps["t_last"] = time.time_ns()
     close_meters()
+    if acc.get("error"):
+        # a stream that failed after a 200: -1 keeps the row out of the
+        # averages, inside the error count, and off the session pointer,
+        # exactly like a call that never reached the network
+        stamps["status"], stamps["error"] = -1, acc["error"]
     response = "".join(chunks)
     text = response
     if knobs["extract"]:
@@ -370,13 +375,18 @@ def dic(prompt,
     # a failed attempt is recorded for the error rate but the session pointer
     # is left alone, so the row is always a leaf and never replayed
     if stamps["status"] != 200:
-        die(f"{stamps['status']} {stamps['error']}", err=err, env=env)
+        code = f"{stamps['status']} " if (stamps["status"] or 0) > 0 else ""
+        die(f"{code}{stamps['error']}", err=err, env=env)
     session_write(mid, env)
 
     if knobs["extract"]:
         out.write(BLUE + text + RESET if use_color(out, env) else text)
     out.flush()
 
+    if acc.get("stop") in ("length", "max_tokens", "max_output_tokens"):
+        # a 200 that stopped because it ran out of room: the answer above is
+        # cut off, and nothing else about the call says so
+        report(verbosity, 1, f"truncated: {acc['stop']}", err=err, env=env)
     report(verbosity, 1,
            summary(model, tokens_in, tokens_out, mid, stamps, verbosity),
            err=err, env=env)

@@ -85,11 +85,19 @@ def parse(event, acc):
         return event.get("delta") or "", "thinking"
     if kind == "response.output_text.delta":
         return event.get("delta") or "", ""
-    if kind in ("response.completed", "response.incomplete", "response.failed"):
+    if kind == "response.failed":
+        # a 200 whose stream carries the failure: record it, never replay it
+        error = (event.get("response") or {}).get("error") or {}
+        acc["error"] = (f"{error.get('code') or 'error'}: "
+                        f"{error.get('message') or 'stream failed'}")
+        return "", ""
+    if kind in ("response.completed", "response.incomplete"):
         resp = event.get("response") or {}
         acc["raw"] = resp.get("output") or []
         usage = resp.get("usage") or {}
         acc["usage"] = (usage.get("input_tokens"), usage.get("output_tokens"))
+        if kind == "response.incomplete":
+            acc["stop"] = (resp.get("incomplete_details") or {}).get("reason")
     return "", ""
 
 

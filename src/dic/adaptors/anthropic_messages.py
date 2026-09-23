@@ -116,6 +116,12 @@ def parse(event, acc):
     """
     kind = event.get("type")
     blocks = acc.setdefault("raw", [])
+    if kind == "error":
+        # an error frame after a 200: not a reply, and never a conversation
+        error = event.get("error") or {}
+        acc["error"] = (f"{error.get('type') or 'error'}: "
+                        f"{error.get('message') or 'stream failed'}")
+        return "", ""
     if kind == "message_start":
         usage = (event.get("message") or {}).get("usage") or {}
         acc["usage"] = (usage.get("input_tokens"), usage.get("output_tokens"))
@@ -136,20 +142,36 @@ def parse(event, acc):
     elif kind == "content_block_stop" and blocks:
         block = blocks[-1]
         if "_json" in block:
-            block["input"] = json.loads(block.pop("_json") or "{}")
+            try:
+                block["input"] = json.loads(block.pop("_json") or "{}")
+            except ValueError:
+                block.pop("_json")      # a tool call cut off mid-arguments
+                block["input"] = {}
     elif kind == "message_delta":
         usage = event.get("usage") or {}
         acc["usage"] = (acc.get("usage", (None, None))[0],
                         usage.get("output_tokens"))
+        acc["stop"] = ((event.get("delta") or {}).get("stop_reason")
+                       or acc.get("stop"))
     return "", ""
 
 
 def finish(acc):
     """The reassembled content blocks, ready to replay verbatim.
 
+    A block whose stream ended before its content_block_stop still carries the
+    scratch key the argument deltas accumulated in: it is dic's own, never the
+    provider's, so it is dropped rather than replayed.
+
     >>> finish({"raw": [{"type": "thinking", "signature": "s"}]})
     [{'type': 'thinking', 'signature': 's'}]
+    >>> finish({"raw": [{"type": "tool_use", "_json": '{"a"'}]})
+    [{'type': 'tool_use', 'input': {}}]
     >>> finish({})
     []
     """
+    for block in acc.get("raw", []):
+        if "_json" in block:
+            block.pop("_json")
+            block.setdefault("input", {})
     return acc.get("raw", [])

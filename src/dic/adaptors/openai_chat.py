@@ -89,11 +89,19 @@ def parse(event, acc):
     >>> acc["usage"]
     (3, 1)
     """
+    if event.get("error"):
+        # a failure reported as a data frame rather than as a status code
+        error = event["error"]
+        acc["error"] = (f"{error.get('type') or 'error'}: {error.get('message')}"
+                        if isinstance(error, dict) else str(error))
+        return "", ""
     usage = event.get("usage")
     if usage:
         acc["usage"] = (usage.get("prompt_tokens"), usage.get("completion_tokens"))
     text, kind = "", ""
     for choice in event.get("choices") or []:
+        if choice.get("finish_reason"):
+            acc["stop"] = choice["finish_reason"]
         delta = choice.get("delta") or {}
         if delta.get("content"):
             text += delta["content"]
