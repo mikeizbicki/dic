@@ -108,12 +108,12 @@ def events(api_base, path, headers, body, stamps):
                 yield json.loads(data)
 
 
-def extract(text):
+def code_block(text):
     """The body of the first fenced code block in text, or text unchanged.
 
-    >>> extract("prose\\n```python\\nx = 1\\n```\\nmore")
+    >>> code_block("prose\\n```python\\nx = 1\\n```\\nmore")
     'x = 1\\n'
-    >>> extract("no fence here")
+    >>> code_block("no fence here")
     'no fence here'
     """
     match = re.search(r"```[^\n]*\n(.*?)```", text, re.S)
@@ -226,6 +226,11 @@ def dic(prompt,
         die("no prompt", err=err, env=env)
 
     prev_mid = knobs["mid"] or (session_read(env) if knobs["cont"] else None)
+    if knobs["cont"] and not prev_mid:
+        # -c with no pointer is an error: never a new conversation, and never
+        # somebody else's
+        die("no conversation in this session"
+            f" (DIC_SESSION={env.get('DIC_SESSION', 'global')})", err=err, env=env)
     rows = history(conn, prev_mid) if prev_mid else []
     if prev_mid and not rows:
         die(f"no such mid: {prev_mid}", err=err, env=env)
@@ -341,7 +346,7 @@ def dic(prompt,
     response = "".join(chunks)
     text = response
     if knobs["extract"]:
-        text = extract(response)
+        text = code_block(response)
     else:
         if painted is not None:
             out.write(RESET)

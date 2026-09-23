@@ -16,8 +16,6 @@ the adaptor converts the blocks and provider-opaque ones are dropped whole.
 """
 import base64, json, mimetypes, os, sqlite3, time
 
-from dic.tty import die
-
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
     mid TEXT PRIMARY KEY,
@@ -246,13 +244,16 @@ def session_path(env):
 
 
 def session_read(env):
-    """The mid that -c continues; a missing pointer is fatal, never a new chat."""
+    """The mid that -c continues, or None when this session has no conversation.
+
+    None is not a new chat: the caller reports the missing pointer on its own
+    stderr, because only the caller knows which stream that is.
+    """
     try:
         with open(session_path(env)) as f:
             return f.read().strip()
     except OSError:
-        session = env.get("DIC_SESSION", "global")
-        die(f"no conversation in this session (DIC_SESSION={session})")
+        return None
 
 
 def session_write(mid, env):
