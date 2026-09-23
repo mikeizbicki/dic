@@ -32,8 +32,23 @@ def use_color(stream, env=None):
     return stream.isatty() and not env.get("NO_COLOR")
 
 
+class DicError(Exception):
+    """A failure dic reports: what die() prints, raised instead of exiting.
+
+    Library code raises it, so that a failed call cannot kill the caller's
+    process, and the entry point hands it to die(), so that what a failure
+    looks like on the terminal and which status it exits with are each said
+    exactly once, at the top, where the caller and its streams are known.
+    """
+
+
 def die(msg, err=None, env=None):
-    """Report an error in red on stderr and exit nonzero."""
+    """Report an error in red on stderr and exit nonzero: the CLI's exit.
+
+    dic() raises DicError instead of calling this, and the entry point
+    catches that error and passes it here, so a library call never ends in
+    sys.exit and the CLI never ends without one.
+    """
     err = sys.stderr if err is None else err
     line = f"dic: {msg}\n"
     err.write(RED + line + RESET if use_color(err, env) else line)

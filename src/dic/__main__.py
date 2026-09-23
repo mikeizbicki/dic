@@ -2,7 +2,9 @@
 """dic - a minimalist CLI for chat LLMs.  See SPEC.md.
 
 The whole CLI: turn argv and stdin into one dic() call, and leave without
-waiting for the interpreter to tear down.  Everything else is a library.
+waiting for the interpreter to tear down.  Everything else is a library, so
+the only work left here is the work a library must not do: read the process's
+stdin, and turn a DicError or a ^C into an exit status.
 
     dic/dic.py          arguments, stdin, os._exit
     dic/client.py       dic(), Reply -- the program
@@ -20,7 +22,7 @@ import os, sys
 
 from dic.client import dic
 from dic.options import parser
-from dic.tty import die
+from dic.tty import DicError, die
 
 
 def load_adaptor(api_type):
@@ -56,8 +58,13 @@ def main():
             prompt = f"{prompt}\n\n{piped}" if (prompt and piped.strip()) else (prompt or piped)
         dic(prompt, **args, t_start=T0, env=os.environ, out=sys.stdout, err=sys.stderr)
         sys.stdout.flush()
+    except DicError as e:
+        # dic() reports a failure by raising, so the CLI is the one place
+        # that decides its colour, its stream and its exit code
+        die(e, err=sys.stderr, env=os.environ)
     except KeyboardInterrupt:
-        # a ^C before the stream: dic() reports the ones during a reply itself
+        # dic() lets a ^C during a reply propagate too: cancelled is a failure
+        # like any other, and the exit code is the CLI's business
         die("cancelled", err=sys.stderr, env=os.environ)
     os._exit(0)   # skip interpreter teardown; the last token is already out
 

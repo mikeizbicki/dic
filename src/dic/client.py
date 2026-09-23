@@ -22,7 +22,7 @@ from dic import config
 from dic.options import flag, resolve
 from dic.store import (STATS, config_dir, db, history, normalize, session_read,
                        session_write, store_attachment, turns_from_rows, ulid)
-from dic.tty import (BLUE, RESET, THINKING, die, pv_update, pv_waiter,
+from dic.tty import (BLUE, RESET, THINKING, DicError, pv_update, pv_waiter,
                      report, summary, use_color)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -72,7 +72,7 @@ def load_adaptor(api_type, env):
         return importlib.import_module(f"dic.adaptors.{name}")
     path = os.path.join(config_dir(env), "adapters", f"{api_type}.py")
     if not os.path.exists(path):
-        die(f"unknown api_type: {api_type}")
+        raise DicError(f"unknown api_type: {api_type}")
     import importlib.util
     spec = importlib.util.spec_from_file_location(f"dic_adaptor_{name}", path)
     module = importlib.util.module_from_spec(spec)
@@ -135,7 +135,7 @@ def options(model, overrides):
     opts = dict(model.get("options") or {})
     for override in overrides:
         if "=" not in override:
-            die(f"bad option (expected key=value): {override}")
+            raise DicError(f"bad option (expected key=value): {override}")
         key, value = override.split("=", 1)
         try:
             value = json.loads(value)
@@ -186,8 +186,10 @@ def dic(prompt,
     `err` default to the process's, so a library call supplies none of them.
 
     Returns a Reply, writing the answer to `out` and colour, the cost line
-    and the meters to `err`.  Exits nonzero through die() on any failure,
-    after the attempt has been recorded, so a failed call is countable too.
+    and the meters to `err`.  A failure raises DicError, after the attempt
+    has been recorded, so a failed call is countable too, and a ^C comes
+    back as KeyboardInterrupt: neither exits the process, because a
+    library's caller is not dic's to kill.
     """
     t_start = time.time_ns() if t_start is None else t_start
     env = os.environ if env is None else env
@@ -223,17 +225,17 @@ def dic(prompt,
         verbosity += knobs["verbosity"]
 
     if not prompt.strip() and not knobs["attachment"]:
-        die("no prompt", err=err, env=env)
+        raise DicError("no prompt")
 
     prev_mid = knobs["mid"] or (session_read(env) if knobs["cont"] else None)
     if knobs["cont"] and not prev_mid:
         # -c with no pointer is an error: never a new conversation, and never
         # somebody else's
-        die("no conversation in this session"
-            f" (DIC_SESSION={env.get('DIC_SESSION', 'global')})", err=err, env=env)
+        raise DicError("no conversation in this session"
+                       f" (DIC_SESSION={env.get('DIC_SESSION', 'global')})")
     rows = history(conn, prev_mid) if prev_mid else []
     if prev_mid and not rows:
-        die(f"no such mid: {prev_mid}", err=err, env=env)
+        raise DicError(f"no such mid: {prev_mid}")
 
     # -m > the model this conversation last used > $DIC_MODEL > the default, so
     # -c carries on with the same provider unless the caller names another one
@@ -244,10 +246,10 @@ def dic(prompt,
     adaptor = load_adaptor(api_type, env)
     key_name = model.get("api_key_name")
     if not key_name:
-        die(f"{model['model_id']}: no api_key_name configured", err=err, env=env)
+        raise DicError(f"{model['model_id']}: no api_key_name configured")
     api_key = env.get(key_name)
     if not api_key:
-        die(f"{key_name} is not set", err=err, env=env)
+        raise DicError(f"{key_name} is not set")
 
     turns, system = [], knobs["system"]
     if rows:
@@ -326,8 +328,11 @@ def dic(prompt,
                 out.write(text)
                 out.flush()
     except KeyboardInterrupt:
-        # No row is written: a truncated response_raw is a thinking block whose
-        # signature never arrived, and replaying one is an error at the API.
+        # A ^C is the caller's, not dic's: close what this call opened and let
+        # it propagate, because only the entry point knows that for the CLI a
+        # cancelled call is a nonzero exit.  No row is written: a truncated
+        # response_raw is a thinking block whose signature never arrived, and
+        # replaying one is an error at the API.
         stamps["t_last"] = stamps["t_done"] = time.time_ns()
         close_meters()
         if not knobs["extract"]:            # nothing reached stdout in -x
@@ -340,7 +345,7 @@ def dic(prompt,
         report(verbosity, 1,
                summary(model, tokens_in, tokens_out, None, stamps, verbosity),
                err=err, env=env)
-        die("cancelled", err=err, env=env)
+        raise
     stamps["t_last"] = time.time_ns()
     close_meters()
     if acc.get("error"):
@@ -375,7 +380,7 @@ def dic(prompt,
     # a failed attempt is recorded for the error rate but the session pointer
     # is left alone, so the row is always a leaf and never replayed
     if stamps["status"] != 200:
-        code = f"{stamps['status']} " if (stamps["status"] or 0) > 0 else ""
+        raise DicError(f"{stamps['status']} {stamps['error']}")
         die(f"{code}{stamps['error']}", err=err, env=env)
     session_write(mid, env)
 

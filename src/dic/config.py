@@ -20,7 +20,7 @@ one stat per file and one query.
 import json, os
 
 from dic.store import config_dir
-from dic.tty import die
+from dic.tty import DicError
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULTS_PATH = os.path.join(HERE, "models.json")
@@ -105,17 +105,17 @@ def entries(path):
         with open(path) as f:
             data = json.load(f)
     except OSError as e:
-        die(f"cannot read {path}: {e}")
+        raise DicError(f"cannot read {path}: {e}")
     except ValueError as e:
-        die(f"malformed json in {path}: {e}")
+        raise DicError(f"malformed json in {path}: {e}")
     if not isinstance(data, dict):
-        die(f"{path}: expected an object mapping model_id to its keys")
+        raise DicError(f"{path}: expected an object mapping model_id to its keys")
     out = {}
     for model_id, keys in data.items():
         if model_id.startswith("#"):
             continue
         if not isinstance(keys, dict):
-            die(f"{path}: {model_id}: expected an object")
+            raise DicError(f"{path}: {model_id}: expected an object")
         out[model_id] = keys
     return out
 
@@ -184,7 +184,7 @@ def materialize(conn, model_id):
         return
     names = model_id.split("+")
     if len(names) == 1 or not defined(conn, names[0]):
-        die(f"unknown model: {model_id} (try `dic --models`)")
+        raise DicError(f"unknown model: {model_id} (try `dic --models`)")
     rows = []
     for i in range(1, len(names) + 1):
         prefix = "+".join(names[:i])
@@ -219,10 +219,10 @@ def resolve(conn, model_id):
     materialize(conn, model_id)
     row = conn.execute("SELECT abstract FROM config WHERE id=?", (model_id,)).fetchone()
     if row and row["abstract"]:
-        die(f"{model_id} is abstract (a provider or mixin), not a model")
+        raise DicError(f"{model_id} is abstract (a provider or mixin), not a model")
     cfg = resolved_keys(conn, model_id)
     if not cfg.get("model_name"):
-        die(f"{model_id}: no model_name configured (try `dic --models`)")
+        raise DicError(f"{model_id}: no model_name configured (try `dic --models`)")
     cfg["model_id"] = model_id
     return cfg
 
@@ -245,7 +245,7 @@ def default_id(conn, env):
         first = first or model_id
         if env.get(resolved_keys(conn, model_id).get("api_key_name") or ""):
             return model_id
-    if not first:
+        raise DicError(f"no models configured: write {models_path(env)}")
         die(f"no models configured: write {models_path(env)}")
     return first
 
