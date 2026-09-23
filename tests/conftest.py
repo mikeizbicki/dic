@@ -129,10 +129,11 @@ def events():
 
 @pytest.fixture
 def models(env, sse):
-    """Write the test's models.json: `fake`, and `fake+anthropic` over it.
+    """Write the test's models.json: `fake`, then one entry per other protocol.
 
-    The second states only its api_type, so it is also the proof that a model
-    inherits its provider's api_base, key and price.
+    Each of the others states only its api_type, so they are also the proof
+    that a model inherits its provider's api_base, key and price -- and the
+    three of them are what the protocol conformance tests parametrize over.
     """
     directory = config_dir(env)
     os.makedirs(directory, exist_ok=True)
@@ -141,7 +142,8 @@ def models(env, sse):
                             "api_base": sse.api_base,
                             "api_key_name": "FAKE_API_KEY",
                             "cost_input": 3.0, "cost_output": 15.0},
-                   "fake+anthropic": {"api_type": "anthropic-messages"}}, f)
+                   "fake+anthropic": {"api_type": "anthropic-messages"},
+                   "fake+responses": {"api_type": "openai-responses"}}, f)
     env["FAKE_API_KEY"] = "test-key"
 
 

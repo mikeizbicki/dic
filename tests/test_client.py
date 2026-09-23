@@ -149,3 +149,101 @@ def test_a_turn_is_converted_for_a_call_that_speaks_another_protocol(streams, en
     assert sse.received[-1].body["messages"][1] == {
         "role": "assistant", "content": "first"}
     assert tree(env)[1]["api_type"] == "openai-chat"
+
+
+# A failure that arrives after the 200, and the provider's own reason for
+# stopping, are the two things a stream can still say.  client.py turns the
+# first into a -1 row that -c will not continue from and the second into a
+# warning, so an adaptor recording neither is silently writing a 200 for a
+# call that failed.  One event list per protocol, so that is a test failure
+# and not a mystery.
+STREAM_ERRORS = {
+    "fake": [
+        {"choices": [{"delta": {"content": "par"}}]},
+        {"error": {"type": "server_error", "message": "overloaded"}}],
+    "fake+anthropic": [
+        {"type": "content_block_start",
+         "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta",
+         "delta": {"type": "text_delta", "text": "par"}},
+        {"type": "error",
+         "error": {"type": "overloaded_error", "message": "overloaded"}}],
+    "fake+responses": [
+        {"type": "response.output_text.delta", "delta": "par"},
+        {"type": "response.failed",
+         "response": {"error": {"code": "server_error",
+                                "message": "overloaded"}}}],
+}
+
+TRUNCATED = {
+    "fake": ("length", [
+        {"choices": [{"delta": {"content": "half"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "length"}]}]),
+    "fake+anthropic": ("max_tokens", [
+        {"type": "content_block_start",
+         "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta",
+         "delta": {"type": "text_delta", "text": "half"}},
+        {"type": "message_delta", "delta": {"stop_reason": "max_tokens"}}]),
+    "fake+responses": ("max_output_tokens", [
+        {"type": "response.output_text.delta", "delta": "half"},
+        {"type": "response.incomplete",
+         "response": {"output": [{"type": "message"}],
+                      "incomplete_details": {"reason": "max_output_tokens"}}}]),
+}
+
+
+@pytest.mark.parametrize("model_id", sorted(STREAM_ERRORS))
+def test_a_failure_reported_inside_the_stream_is_not_a_reply(streams, env, sse,
+                                                             models, model_id):
+    sse.events = STREAM_ERRORS[model_id]
+
+    with pytest.raises(DicError, match="overloaded"):
+        say(streams, env, "hi", model=model_id)
+
+    row = tree(env)[0]
+    assert row["status"] == -1 and "overloaded" in row["error"]
+    assert row["response"] == "par"          # what did arrive is still kept
+    assert not os.path.exists(session_path(env))    # and never continued
+
+
+@pytest.mark.parametrize("model_id", sorted(TRUNCATED))
+def test_a_truncated_answer_says_so_and_is_still_an_answer(streams, env, sse,
+                                                           models, model_id):
+    reason, events = TRUNCATED[model_id]
+    streams.err.tty = True                   # verbosity 1: the notice is level 1
+    sse.events = events
+
+    reply = say(streams, env, "hi", model=model_id)
+
+    assert reply.status == 200
+    assert streams.out.getvalue() == "half\n"
+    assert f"truncated: {reason}" in streams.err.getvalue()
+
+
+def test_unparsable_tool_arguments_do_not_kill_the_call(streams, env, sse, models):
+    sse.events = [
+        {"type": "content_block_start",
+         "content_block": {"type": "tool_use", "id": "toolu_1", "name": "f"}},
+        {"type": "content_block_delta",
+         "delta": {"type": "input_json_delta", "partial_json": '{"a"'}},
+        {"type": "content_block_stop"}]
+
+    say(streams, env, "hi", model="fake+anthropic")
+
+    (block,) = json.loads(tree(env)[0]["response_raw"])
+    assert (block["type"], block["input"]) == ("tool_use", {})
+
+
+def test_a_tool_call_that_never_finished_is_stored_without_its_scratch_key(
+        streams, env, sse, models):
+    sse.events = [
+        {"type": "content_block_start",
+         "content_block": {"type": "tool_use", "id": "toolu_1", "name": "f"}},
+        {"type": "content_block_delta",
+         "delta": {"type": "input_json_delta", "partial_json": '{"a": 1}'}}]
+
+    say(streams, env, "hi", model="fake+anthropic")
+
+    (block,) = json.loads(tree(env)[0]["response_raw"])
+    assert "_json" not in block and block["input"] == {}
