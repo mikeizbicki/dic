@@ -85,21 +85,18 @@ def test_mid_wins_over_continue(streams, env, sse, model, events):
 
 def test_a_failed_call_is_stored_and_leaves_the_pointer_alone(streams, env, sse, model):
     sse.status = 503
-    with pytest.raises(DicError):
+    with pytest.raises(DicError, match="503"):
         say(streams, env, "hi", model=model)
 
     row = tree(env)[0]
     assert row["status"] == 503 and "overloaded" in row["error"]
     assert row["response"] == ""                 # nothing to replay next turn
     assert not os.path.exists(session_path(env))
-    assert "503" in streams.err.getvalue()
 
 
 def test_continue_without_a_session_pointer_is_an_error(streams, env, model):
-    with pytest.raises(DicError):
+    with pytest.raises(DicError, match="no conversation"):
         say(streams, env, "hi", model=model, cont=True)
-
-    assert "no conversation" in streams.err.getvalue()
 
 
 def test_extract_prints_the_code_block_but_stores_the_whole_answer(streams, env, sse,
