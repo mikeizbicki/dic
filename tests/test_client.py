@@ -4,7 +4,7 @@ Each test is one dic() call -- prompt in, answer out, one row written -- because
 that is the unit a user has, and a failure should name the part of the call
 that broke.  A pure function is doctested where it lives, not retested here.
 """
-import json, os
+import hashlib, json, os
 
 import pytest
 
@@ -121,10 +121,11 @@ def test_an_attachment_is_stored_verbatim_and_sent_as_a_data_url(streams, env, s
 
     aid = json.loads(tree(env)[0]["attachments"])[0]
     conn = db(env)
-    data = conn.execute("SELECT data FROM attachments WHERE aid=?",
-                        (aid,)).fetchone()[0]
+    row = conn.execute("SELECT path, hash FROM attachments WHERE aid=?",
+                       (aid,)).fetchone()
     conn.close()
-    assert data == b"\x89PNG\r\n\x1a\n"
+    assert row["path"] == str(image)
+    assert row["hash"] == hashlib.sha256(image.read_bytes()).hexdigest()
 
 
 def test_a_turn_is_replayed_verbatim_to_the_protocol_that_produced_it(streams, env,
