@@ -13,6 +13,8 @@ entry point.
     dic/config.py       model and provider config: json sources, sqlite cache
     dic/store.py        sqlite message tree, attachments, session pointers
     dic/tty.py          colour, errors, the cost line, the progress meters
+    dic/tool.py         --tools: python functions the model may call
+    dic/tools/*.py      the tools that ship with dic, one category each
     dic/adaptors/*.py   one wire protocol each
     dic/models.json     packaged defaults, overlaid by the user's files
 """
@@ -27,6 +29,11 @@ from dic.tty import (BLUE, RESET, THINKING, DicError, Line, pv_update,
                      report, summary, use_color)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# How many times one call may ask for tools before dic stops asking: a model
+# that loops is a bug and not a conversation, and a call is not an infinite
+# budget.
+MAX_TOOL_ROUNDS = 16
 
 
 class Reply:
@@ -158,6 +165,9 @@ def dic(prompt,
                            help="attach a file") = (),
         option:       flag(short="-o", action="append", metavar="KEY=VALUE",
                            help="override a model option") = (),
+        tools:        flag(long="--tools", action="append",
+                           metavar="MODULE:FUNC",
+                           help="offer a python function as a tool; repeatable") = (),
         extract:      flag(short="-x", action="bool",
                            help="print only the first fenced code block") = False,
         path:         flag(long="--path", metavar="FILE",
@@ -268,6 +278,18 @@ def dic(prompt,
     if not api_key:
         raise DicError(f"{key_name} is not set")
 
+    # --tools names python, so dic.tool -- and the inspect and typing it reads
+    # the annotations with -- is imported only when one was given, exactly as
+    # only the selected adaptor is.  A spec that does not import is an error
+    # here, before the network and before a .part is opened.
+    specs = knobs["tools"]
+    if isinstance(specs, str):      # DIC_TOOLS="pkg.mod:fn" is one spec, not chars
+        specs = [specs]
+    tools = ()
+    if specs:
+        from dic import tool
+        tools = tool.resolve(specs)
+
     # what the answer will be, settled before the call so that a missing or
     # taken --path fails before the network instead of after a whole video
     mime = knobs["mime_type"] or model.get("output") or "text/plain"
@@ -297,6 +319,14 @@ def dic(prompt,
     turns = normalize(turns)
 
     opts = options(model, knobs["option"])
+    if tools:
+        # the model is offered the tools it may call, in this wire protocol's
+        # own shape; a protocol with no tools at all says so here and not at
+        # the API, which would reject the request as malformed
+        if not (getattr(adaptor, "tool_schema", None)
+                and getattr(adaptor, "calls", None)):
+            raise DicError(f"{api_type}: this protocol does not support tools")
+        opts["tools"] = adaptor.tool_schema(tools)
     prepare = getattr(adaptor, "prepare", None)
     if prepare is not None:            # fal reads URLs, so files go up first
         turns = prepare(model, api_key, turns, opts)
@@ -309,7 +339,8 @@ def dic(prompt,
            f"POST {model['api_base']}{adaptor.PATH} {json.dumps(body, default=str)}",
            err=err, env=env)
     stamps = {"t_start": t_start, "status": None, "error": None}
-    acc, chunks, painted = {}, [], None
+    wire = {}       # the first round's wire times: a tool round's are not ours
+    chunks, painted = [], None
     # reasoning is progress, not content, so it is metered by default; the
     # answer is metered only where stderr is the only thing on the screen
     pv_thinking = True if knobs["pv_thinking"] is None else knobs["pv_thinking"]
@@ -362,42 +393,82 @@ def dic(prompt,
 
     try:
         call = getattr(adaptor, "call", None)
-        stream = (call(model, api_key, body, line, stamps)
-                  if call is not None else
-                  events(model["api_base"], adaptor.PATH, headers, body, stamps))
-        for event in stream:
-            chunk, kind = adaptor.parse(event, acc)
-            if not chunk:
-                continue
-            if kind != "blob":
-                sink.end_blob()         # a blob ends when anything else arrives
-            stamps.setdefault("t_first", time.time_ns())
-            line.first_token()          # the wait is over, whatever arrived
-            if kind == "thinking":
-                if pv is not None:
-                    pv_update(pv, chunk, err=err, env=env)
-                elif use_color(err, env):
-                    err.write(THINKING + chunk + RESET)
-                else:
-                    err.write(chunk)
-                if pv is None:
-                    err.flush()
-                continue
-            if kind == "blob":          # bytes: --path was checked above
-                sink.write_blob(chunk)
+        rounds = 0
+        while True:                 # a round may end by asking for a tool
+            acc = {}
+            stream = (call(model, api_key, body, line, stamps)
+                      if call is not None else
+                      events(model["api_base"], adaptor.PATH, headers, body, stamps))
+            for event in stream:
+                chunk, kind = adaptor.parse(event, acc)
+                if not chunk:
+                    continue
+                if kind != "blob":
+                    sink.end_blob()     # a blob ends when anything else arrives
+                stamps.setdefault("t_first", time.time_ns())
+                line.first_token()      # the wait is over, whatever arrived
+                if kind == "thinking":
+                    if pv is not None:
+                        pv_update(pv, chunk, err=err, env=env)
+                    elif use_color(err, env):
+                        err.write(THINKING + chunk + RESET)
+                    else:
+                        err.write(chunk)
+                    if pv is None:
+                        err.flush()
+                    continue
+                if kind == "blob":      # bytes: --path was checked above
+                    sink.write_blob(chunk)
+                    if pv_resp is not None:
+                        pv_update(pv_resp, chunk, err=err, env=env)
+                    continue
+                if pv is not None:      # the answer starts on a line of its own
+                    pv_update(pv, final=True, err=err, env=env)
+                chunks.append(chunk)
                 if pv_resp is not None:
                     pv_update(pv_resp, chunk, err=err, env=env)
-                continue
-            if pv is not None:      # the answer starts on a line of its own
-                pv_update(pv, final=True, err=err, env=env)
-            chunks.append(chunk)
-            if pv_resp is not None:
-                pv_update(pv_resp, chunk, err=err, env=env)
-            if not knobs["extract"]:
-                if paint and painted != kind:
-                    sink.write((RESET if painted is not None else "") + BLUE)
-                    painted = kind
-                sink.write(chunk)
+                if not knobs["extract"]:
+                    if paint and painted != kind:
+                        sink.write((RESET if painted is not None else "") + BLUE)
+                        painted = kind
+                    sink.write(chunk)
+            # the wire times of the first round are what this call cost to
+            # reach the network; a later round's are a second request into a
+            # conversation that has already begun
+            for phase in ("t_connect", "t_request", "t_headers"):
+                wire.setdefault(phase, stamps.get(phase))
+            asked = adaptor.calls(acc) if tools else ()
+            if not asked:
+                break
+            rounds += 1
+            if rounds > MAX_TOOL_ROUNDS:
+                raise DicError(f"the model asked for tools {rounds} times"
+                               " over; giving up")
+            results = []
+            for want in asked:
+                report(verbosity, 1,
+                       f"tool: {want['name']}"
+                       f" {json.dumps(want['arguments'], default=str)}",
+                       err=err, env=env)
+                record = next((t for t in tools if t["name"] == want["name"]),
+                              None)
+                if record is None:
+                    content = f"no such tool: {want['name']}"
+                else:
+                    try:
+                        content = tool.call(record, want["arguments"])
+                    except Exception as e:
+                        # a tool that fails is the model's to fix, so its
+                        # message is the result and not the end of the call
+                        content = f"{type(e).__name__}: {e}"
+                        report(verbosity, 1, f"tool: {content}", err=err, env=env)
+                results.append({"type": "tool_result", "id": want["id"],
+                                "content": content})
+            turns.append({"role": "assistant", "blocks": [],
+                          "raw": adaptor.finish(acc)})
+            turns.append({"role": "user", "blocks": results})
+            body = adaptor.build(model, turns, system, opts)
+        stamps.update({k: v for k, v in wire.items() if v is not None})
     except KeyboardInterrupt:
         # A ^C is the caller's, not dic's: close what this call opened and let
         # it propagate, because only the entry point knows that for the CLI a

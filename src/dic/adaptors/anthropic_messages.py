@@ -21,6 +21,16 @@ def auth(key):
     return {"x-api-key": key, "anthropic-version": "2023-06-01"}
 
 
+def tool_schema(tools):
+    """The tools in this protocol's shape: name, description, input_schema.
+
+    >>> tool_schema([{"name": "ls", "description": "List.", "parameters": {}}])
+    [{'name': 'ls', 'description': 'List.', 'input_schema': {}}]
+    """
+    return [{"name": t["name"], "description": t["description"],
+             "input_schema": t["parameters"]} for t in tools]
+
+
 def build(model, turns, system, params):
     """IR turns to a streaming messages body; system is a top-level parameter.
 
@@ -60,6 +70,10 @@ def build(model, turns, system, params):
                 content.append({"type": "image", "source": {
                     "type": "base64", "media_type": block["mime_type"],
                     "data": base64.b64encode(block["data"]).decode()}})
+            elif block["type"] == "tool_result":
+                content.append({"type": "tool_result",
+                                "tool_use_id": block["id"],
+                                "content": block["content"]})
         msgs.append({"role": turn["role"], "content": content})
     body = {"model": model["model_name"], "messages": msgs, "stream": True,
             "max_tokens": 4096}
@@ -171,6 +185,19 @@ def parse(event, acc):
         acc["stop"] = ((event.get("delta") or {}).get("stop_reason")
                        or acc.get("stop"))
     return "", ""
+
+
+def calls(acc):
+    """The tool_use blocks of this round, as {id, name, arguments}.
+
+    >>> acc = {"raw": [{"type": "tool_use", "id": "t1", "name": "ls",
+    ...                 "input": {"path": "."}}]}
+    >>> calls(acc)
+    [{'id': 't1', 'name': 'ls', 'arguments': {'path': '.'}}]
+    """
+    return [{"id": block.get("id"), "name": block.get("name"),
+             "arguments": block.get("input") or {}}
+            for block in acc.get("raw", []) if block.get("type") == "tool_use"]
 
 
 def finish(acc):

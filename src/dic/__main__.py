@@ -12,6 +12,8 @@ stdin, and turn a DicError or a ^C into an exit status.
     dic/config.py       model and provider config: json sources, sqlite cache
     dic/store.py        sqlite message tree, attachments, session pointers
     dic/tty.py          colour, errors, the cost line, the progress meters
+    dic/tool.py         --tools: python functions the model may call
+    dic/tools/*.py      the tools that ship with dic, one category each
     dic/adaptors/*.py   one wire protocol each
     dic/models.json     packaged defaults, overlaid by the user's files
 """

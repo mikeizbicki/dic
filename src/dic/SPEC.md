@@ -58,6 +58,7 @@ Whenever possible, names and semantics remain the same as simonw's `llm`.
 |            | `--no-pv-thinking` | stream the reasoning text itself instead |
 |            | `--pv-response` | meter the answer on stderr too; the default when stdout is not a terminal |
 |            | `--no-pv-response` | do not meter the answer |
+|            | `--tools`      | offer an importable python function as a tool; repeatable |
 |            | `--aliases`    | print shell alias definitions for `dic.sh` to eval |
 |            | `--models`     | list the configured model ids |
 |            | `--stats`      | print per-model runtime and usage statistics |
@@ -95,6 +96,46 @@ With `-c` or `--mid` the model is inherited from the message the conversation
 continues from, so a thread keeps its provider until the caller names another
 one; the full precedence is `-m`, then the inherited `model_id`, then
 `DIC_MODEL`, then the first configured entry whose key is exported.
+
+### Tools
+
+`--tools PATH` offers the model a python function, and is repeatable:
+
+    --tools dic.tools.fs:ls      one function
+    --tools dic.tools.fs:*       every public function in one module
+    --tools pkg.mod.fn           dotted, when the module path is unambiguous
+
+The module path is resolved by importing it, longest first, so the dotted form
+means `pkg.mod` plus `fn` when `pkg.mod` is a module and `pkg.mod.fn` is not;
+`:` says the same thing without the guess.  A module's `*` is its `__all__`
+when it declares one, and otherwise the functions it defines -- never every
+name its namespace holds, which is every name it imported.
+
+Nothing is registered and nothing is generated: the tool *is* the function.
+Its name is the function's name, its description is the first paragraph of its
+docstring, and its parameters are a JSON Schema built from its type
+annotations.  A parameter with no annotation, a `*args`, or a type with no JSON
+form is an error naming the function, because a parameter the model cannot see
+the type of is one it will fill in wrongly; `Annotated[T, "why"]` is how a
+parameter is described, because that is a docstring style nobody has to parse.
+A result that `json` cannot encode is an error too, and a string is passed
+through as itself.
+
+A tool that *fails* is not a failed call: the exception is handed back to the
+model as the result, so the model can read it and try again.  A call that keeps
+asking for tools is given 16 rounds and then fails, because a loop is a bug and
+not a conversation.
+
+Tools ship in categories, one module each, so `dic.tools.fs:*` is a category
+and `dic.tools.fs:ls` is one tool in it.  Importing that module is the cost,
+which is why `dic.tool` itself is imported only when `--tools` is given; a tool
+whose own heavy imports are inside its body still costs nothing until it is
+called.
+
+A tool runs in dic's own process, with dic's own permissions.  dic does not
+sandbox it, and does not pretend to know whether it was sandboxed: running
+untrusted tools means running dic itself under `bwrap`, so that every tool
+inherits the jail rather than being trusted to build one.
 
 ### Output
 
@@ -184,9 +225,11 @@ is not, then moved by `-q` (to 0) or `-v` (each repetition one higher).
 All of it goes through one `report(verbosity, level, msg)` in `tty.py`.
 
 **TODO:**
-1. Working with tools is currently not implemented, but planned for the future.
-    The database and internal message representation are designed so that this can be added
-    without breaking existing conversations.
+1. Tools work for importable python functions (`--tools`), but not for MCP
+    servers, which are the same name, description and JSON Schema arriving over
+    a pipe instead of over an import; that is the next piece of this.
+    The tool exchange of one call is not yet stored in the message tree -- only
+    the final turn is -- so a later `-c` cannot see what a tool did.
 
 2. Many providers allow prompt caching to reduce cost of input tokens.
     It's not clear to me the best way to structure this from the cli or in the various config files.

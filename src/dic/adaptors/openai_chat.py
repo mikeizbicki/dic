@@ -9,7 +9,10 @@ Every adaptor module exports the same five names:
     parse(event, acc)  one SSE event -> (text, kind) to print, state in acc
     finish(acc)     acc -> the JSON stored in messages.response_raw
 """
+import json
+
 from dic.store import data_url, openai_usage
+from dic.tty import DicError
 
 PATH = "/chat/completions"
 
@@ -19,6 +22,18 @@ def auth(key):
     {'Authorization': 'Bearer k'}
     """
     return {"Authorization": "Bearer " + key}
+
+
+def tool_schema(tools):
+    """The tools in this protocol's shape: one function declaration each.
+
+    >>> tool_schema([{"name": "ls", "description": "List.", "parameters": {}}])
+    [{'type': 'function', 'function': {'name': 'ls', 'description': 'List.', 'parameters': {}}}]
+    """
+    return [{"type": "function",
+             "function": {"name": t["name"], "description": t["description"],
+                          "parameters": t["parameters"]}}
+            for t in tools]
 
 
 def build(model, turns, system, params):
@@ -55,16 +70,21 @@ def build(model, turns, system, params):
         if "raw" in turn:
             msgs.append(turn["raw"])
             continue
-        parts = []
+        parts, results = [], []
         for block in turn["blocks"]:
             if block["type"] == "text":
                 parts.append({"type": "text", "text": block["text"]})
             elif block["type"] == "image":
                 parts.append({"type": "image_url",
                               "image_url": {"url": data_url(block)}})
-        if all(part["type"] == "text" for part in parts):
-            parts = "\n\n".join(part["text"] for part in parts)
-        msgs.append({"role": turn["role"], "content": parts})
+            elif block["type"] == "tool_result":
+                results.append({"role": "tool", "tool_call_id": block["id"],
+                                "content": block["content"]})
+        msgs.extend(results)        # a result answers the call just above it
+        if parts or not results:    # ... and a turn of results is no message
+            if all(part["type"] == "text" for part in parts):
+                parts = "\n\n".join(part["text"] for part in parts)
+            msgs.append({"role": turn["role"], "content": parts})
     body = {"model": model["model_name"], "messages": msgs, "stream": True,
             "stream_options": {"include_usage": True}}
     body.update(params)
@@ -109,15 +129,66 @@ def parse(event, acc):
             reasoning = delta.get("reasoning_content") or delta.get("reasoning")
             if reasoning:
                 text, kind = text + reasoning, "thinking"
+        for piece in delta.get("tool_calls") or []:
+            # the arguments of one call arrive as a JSON string in pieces, one
+            # piece at a time; they are accumulated verbatim so that the call
+            # replayed next round is the call the server made
+            calls = acc.setdefault("tool_calls", [])
+            slot = piece.get("index", 0)
+            while len(calls) <= slot:
+                calls.append({"type": "function", "function": {"arguments": ""}})
+            function = piece.get("function") or {}
+            if piece.get("id"):
+                calls[slot]["id"] = piece["id"]
+            if function.get("name"):
+                calls[slot]["function"]["name"] = function["name"]
+            if function.get("arguments"):
+                calls[slot]["function"]["arguments"] += function["arguments"]
     if text and kind != "thinking":
         acc.setdefault("text", []).append(text)
     return text, kind
 
 
+def calls(acc):
+    """The tool calls this round asked for, as {id, name, arguments}.
+
+    The wire shape stays in acc["tool_calls"] for the replay; this is the
+    same list read into what a python function takes, so arguments that are
+    not JSON are an error here rather than a call with no arguments at all.
+
+    >>> acc = {}
+    >>> parse({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1",
+    ...     "function": {"name": "ls", "arguments": '{"path"'}}]}}]}, acc)
+    ('', '')
+    >>> parse({"choices": [{"delta": {"tool_calls": [{"index": 0,
+    ...     "function": {"arguments": ': "."}'}}]}}]}, acc)
+    ('', '')
+    >>> calls(acc)
+    [{'id': 'c1', 'name': 'ls', 'arguments': {'path': '.'}}]
+    """
+    out = []
+    for call in acc.get("tool_calls") or []:
+        function = call.get("function") or {}
+        arguments = function.get("arguments") or "{}"
+        try:
+            arguments = json.loads(arguments)
+        except ValueError as e:
+            raise DicError(f"{function.get('name')}: its arguments are not"
+                           f" JSON: {e}")
+        out.append({"id": call.get("id"), "name": function.get("name"),
+                    "arguments": arguments})
+    return out
+
+
 def finish(acc):
-    """The assistant message to replay next turn; this protocol has no opaque blocks.
+    """The assistant message to replay next turn, its tool calls included.
 
     >>> finish({"text": ["ab", "c"]})
     {'role': 'assistant', 'content': 'abc'}
+    >>> finish({"tool_calls": [{"id": "c1"}]})["tool_calls"]
+    [{'id': 'c1'}]
     """
-    return {"role": "assistant", "content": "".join(acc.get("text", []))}
+    message = {"role": "assistant", "content": "".join(acc.get("text", []))}
+    if acc.get("tool_calls"):
+        message["tool_calls"] = acc["tool_calls"]
+    return message
