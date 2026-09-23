@@ -493,6 +493,7 @@ def dic(prompt,
                  model_id=model["model_id"], api_type=api_type,
                  status=stamps["status"], error=stamps["error"],
                  usage=usage, paths=[o["path"] for o in outputs], mime=mime,
+                 timings=stamps)
 
 
 # The pool generate_async shares, built once by _pool() on first use.  A
@@ -551,4 +552,3 @@ async def generate_async(prompt, **knobs):
     import asyncio
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_pool(), lambda: dic(prompt, **knobs))
-                 timings=stamps)
