@@ -22,9 +22,9 @@ import http.client, json, os, re, sys, time, urllib.parse
 
 from dic import config, output, price
 from dic.options import flag, resolve
-from dic.store import (INSERT, STATS, config_dir, db, history, normalize,
-                       session_read, session_write, store_attachment,
-                       turns_from_rows, ulid)
+from dic.store import (INSERT, STATS, TOOL_STATS, config_dir, db, history,
+                       normalize, session_read, session_write,
+                       store_attachment, turns_from_rows, ulid)
 from dic.tty import (BLUE, RESET, THINKING, DicError, Line, pv_update,
                      report, summary, use_color)
 
@@ -91,6 +91,21 @@ def load_adaptor(api_type, env):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def table(rows):
+    """Rows of sqlite cells as one tab-separated table with a header line.
+
+    Python computes nothing here, so the output is already sort- and
+    awk-shaped, and every number in it was computed by sqlite.
+
+    >>> table([])
+    ''
+    """
+    return "".join(
+        "\t".join("" if cell is None else str(cell) for cell in row) + "\n"
+        for row in ([rows[0].keys()] if rows else [])
+        + [list(r) for r in rows])
 
 
 def events(api_base, path, headers, body, stamps):
@@ -234,11 +249,10 @@ def dic(prompt,
         out.flush()
         return Reply(text=text)
     if knobs["stats"]:
-        rows = conn.execute(STATS).fetchall()   # every number computed by sqlite
-        text = "".join("\t".join("" if cell is None else str(cell) for cell in row)
-                       + "\n"
-                       for row in ([rows[0].keys()] if rows else [])
-                       + [list(r) for r in rows])
+        text = table(conn.execute(STATS).fetchall())
+        tools = table(conn.execute(TOOL_STATS).fetchall())
+        if tools:
+            text += "\n" + tools
         out.write(text)
         out.flush()
         return Reply(text=text)
@@ -339,18 +353,14 @@ def dic(prompt,
            f"POST {model['api_base']}{adaptor.PATH} {json.dumps(body, default=str)}",
            err=err, env=env)
     stamps = {"t_start": t_start, "status": None, "error": None}
-    wire = {}       # the first round's wire times: a tool round's are not ours
-    chunks, painted = [], None
+    painted = None
     # reasoning is progress, not content, so it is metered by default; the
     # answer is metered only where stderr is the only thing on the screen
     pv_thinking = True if knobs["pv_thinking"] is None else knobs["pv_thinking"]
     pv_response = (not out.isatty() if knobs["pv_response"] is None
                    else knobs["pv_response"])
-    pv = {"name": "thinking"} if pv_thinking else None
-    pv_resp = {"name": "response"} if pv_response else None
+    pv = pv_resp = None
     line = Line(err, env)
-    if pv is not None or pv_resp is not None:
-        line.wait()             # a bare ttft clock until something arrives
 
     def close_meters():
         """Stop the wait clock and close each meter, so nothing repaints after."""
@@ -391,21 +401,98 @@ def dic(prompt,
 
     paint = use_color(out, env) and knobs["path"] is None
 
+    def keep(wire):
+        """Fold one round's timings into the call's, each phase counted once.
+
+        The first round is the one whose phases are dic's own -- the connect,
+        the request and the ttft that preceded the model's first token are
+        what this program exists to keep small -- and a later round is a
+        request into a conversation that has already begun.  What is summed is
+        the time spent streaming, because a rate over a call that stopped to
+        run a tool is not a rate.
+        """
+        for phase in ("t_connect", "t_request", "t_headers", "t_first"):
+            if stamps.get(phase) is None and wire.get(phase) is not None:
+                stamps[phase] = wire[phase]
+        if not wire.get("kept"):
+            wire["kept"] = True
+            if wire.get("t_first") and wire.get("t_last"):
+                stamps["t_stream"] = (stamps.get("t_stream", 0)
+                                      + wire["t_last"] - wire["t_first"])
+        stamps["t_last"] = wire.get("t_last") or stamps.get("t_last")
+        stamps["t_done"] = wire.get("t_done") or stamps.get("t_done")
+        stamps["status"] = wire.get("status")
+        stamps["error"] = wire.get("error")
+
+    def billing(acc):
+        """The usage one round reported and what the price table makes of it.
+
+        One place, reached from the reply, the tool loop and the cancelled
+        path, so a ^C's cost line and the reply's are the same numbers.  The
+        itemization comes back with the total because it is what gets stored:
+        the rule that priced each count is not recoverable from the config,
+        which the next invocation may already have edited.
+        """
+        usage = acc.get("usage") or {}
+        facts = price.facts(usage, acc.get("tier") or opts.get("service_tier")
+                            or "default")
+        total, items = price.rate(model, usage, facts)
+        return usage, total, items
+
+    ids = [att["aid"] for att in attached]
+
+    def insert(index, prev, response, raw, outputs, results, usage, cost, items,
+               status, error, wire):
+        """Append one round -- one API call -- to the tree, and return its mid.
+
+        A tool loop is several paid requests for one answer, so each is a row
+        of its own: the rounds are countable, a failure is attributable to the
+        round that failed, and the conversation they form replays out of the
+        tree alone.  `prev` is the row this round continues from, which for the
+        second round is the first round's own mid.  Only the first round
+        carries the prompt and the attachments: a later one continues that
+        turn rather than making one.
+        """
+        mid = ulid()
+        conn.execute(INSERT, (
+            mid, index, prompt if index == 0 else "", system, response,
+            json.dumps(raw), prev, json.dumps(ids if index == 0 else []),
+            json.dumps(outputs), json.dumps(results) if results else None,
+            model["model_id"], api_type, status, error,
+            json.dumps(usage) if usage else None,
+            cost, json.dumps(items), price.price_hash(model),
+            wire.get("t_start"), wire.get("t_connect"), wire.get("t_request"),
+            wire.get("t_headers"), wire.get("t_first"), wire.get("t_last"),
+            wire.get("t_done")))
+        return mid
+
+    paint = use_color(out, env) and knobs["path"] is None
+
+    acc, chunks, wire, asked, results = {}, [], {}, (), []
+    printed, rounds, prev, index, seen = [], [], prev_mid, 0, 0
+
     try:
         call = getattr(adaptor, "call", None)
-        rounds = 0
         while True:                 # a round may end by asking for a tool
-            acc = {}
-            stream = (call(model, api_key, body, line, stamps)
+            acc, chunks, asked, results = {}, [], (), []
+            # a later round begins where the round before it stopped, so its
+            # overhead is the tools that ran in between and not dic's startup
+            wire = {"t_start": stamps.get("t_last") or t_start}
+            line.restart()          # this request's clock, not the call's
+            pv = {"name": "thinking"} if pv_thinking else None
+            pv_resp = {"name": "response"} if pv_response else None
+            if pv is not None or pv_resp is not None:
+                line.wait()         # a bare ttft clock until something arrives
+            stream = (call(model, api_key, body, line, wire)
                       if call is not None else
-                      events(model["api_base"], adaptor.PATH, headers, body, stamps))
+                      events(model["api_base"], adaptor.PATH, headers, body, wire))
             for event in stream:
                 chunk, kind = adaptor.parse(event, acc)
                 if not chunk:
                     continue
                 if kind != "blob":
                     sink.end_blob()     # a blob ends when anything else arrives
-                stamps.setdefault("t_first", time.time_ns())
+                wire.setdefault("t_first", time.time_ns())
                 line.first_token()      # the wait is over, whatever arrived
                 if kind == "thinking":
                     if pv is not None:
@@ -425,6 +512,7 @@ def dic(prompt,
                 if pv is not None:      # the answer starts on a line of its own
                     pv_update(pv, final=True, err=err, env=env)
                 chunks.append(chunk)
+                printed.append(chunk)
                 if pv_resp is not None:
                     pv_update(pv_resp, chunk, err=err, env=env)
                 if not knobs["extract"]:
@@ -432,18 +520,23 @@ def dic(prompt,
                         sink.write((RESET if painted is not None else "") + BLUE)
                         painted = kind
                     sink.write(chunk)
-            # the wire times of the first round are what this call cost to
-            # reach the network; a later round's are a second request into a
-            # conversation that has already begun
-            for phase in ("t_connect", "t_request", "t_headers"):
-                wire.setdefault(phase, stamps.get(phase))
+            wire["t_last"] = time.time_ns()
+            close_meters()
+            sink.end_blob()
+            if acc.get("error"):
+                # a stream that failed after a 200: -1 keeps the row out of
+                # the averages, inside the error count, and off the session
+                # pointer, exactly like a call that never reached the network
+                wire["status"], wire["error"] = -1, acc["error"]
+            elif wire.get("status") is None:
+                # a call() adaptor replaces the transport and never sees a
+                # wire status; a stream that ran to its end is a 200
+                wire["status"] = 200
+            keep(wire)
             asked = adaptor.calls(acc) if tools else ()
-            if not asked:
-                break
-            rounds += 1
-            if rounds > MAX_TOOL_ROUNDS:
-                raise DicError(f"the model asked for tools {rounds} times"
-                               " over; giving up")
+            if asked and index + 1 >= MAX_TOOL_ROUNDS:
+                raise DicError(f"the model has asked for tools"
+                               f" {MAX_TOOL_ROUNDS} rounds running; giving up")
             results = []
             for want in asked:
                 report(verbosity, 1,
@@ -452,30 +545,48 @@ def dic(prompt,
                        err=err, env=env)
                 record = next((t for t in tools if t["name"] == want["name"]),
                               None)
+                started = time.time_ns()
                 if record is None:
-                    content = f"no such tool: {want['name']}"
+                    ok, content = False, f"no such tool: {want['name']}"
                 else:
                     try:
                         content = tool.call(record, want["arguments"])
+                        ok = True
                     except Exception as e:
                         # a tool that fails is the model's to fix, so its
                         # message is the result and not the end of the call
-                        content = f"{type(e).__name__}: {e}"
-                        report(verbosity, 1, f"tool: {content}", err=err, env=env)
-                results.append({"type": "tool_result", "id": want["id"],
-                                "content": content})
-            turns.append({"role": "assistant", "blocks": [],
-                          "raw": adaptor.finish(acc)})
-            turns.append({"role": "user", "blocks": results})
+                        ok, content = False, f"{type(e).__name__}: {e}"
+                results.append({"id": want["id"], "name": want["name"],
+                                "ok": ok, "error": None if ok else content,
+                                "content": content, "t_start": started,
+                                "t_end": time.time_ns()})
+            usage, cost, items = billing(acc)
+            rounds.append((usage, cost, items))
+            raw = adaptor.finish(acc)
+            if not asked:
+                break
+            # this round asked for tools, so it is not the last one: it is
+            # written now, and the next round continues from it
+            prev = insert(index, prev, "".join(chunks), raw,
+                          [{"path": p, "mime_type": mime}
+                           for p in sink.paths[seen:]],
+                          results, usage, cost, items,
+                          wire["status"], wire.get("error"), wire)
+            seen = len(sink.paths)
+            conn.commit()
+            turns.append({"role": "assistant", "blocks": [], "raw": raw})
+            turns.append({"role": "user", "blocks": [
+                {"type": "tool_result", "id": r["id"], "content": r["content"]}
+                for r in results]})
             body = adaptor.build(model, turns, system, opts)
-        stamps.update({k: v for k, v in wire.items() if v is not None})
+            index += 1
     except KeyboardInterrupt:
         # A ^C is the caller's, not dic's: close what this call opened and let
         # it propagate, because only the entry point knows that for the CLI a
         # cancelled call is a nonzero exit.  The bytes already received are not
         # thrown away: whatever was written stays in a .part, that name is on
         # the row as this turn's output, and the error says what is on disk.
-        stamps["t_last"] = stamps["t_done"] = time.time_ns()
+        wire["t_last"] = wire["t_done"] = time.time_ns()
         close_meters()
         if not knobs["extract"] and knobs["path"] is None:
             if painted is not None:         # do not leave stdout painted blue
@@ -485,11 +596,14 @@ def dic(prompt,
             out.flush()
         pending = sink.pending()
         sink.abandon()
-        usage, cost, items = billing()
-        insert(ulid(), "", adaptor.finish(acc),
+        usage, cost, items = billing(acc)
+        rounds.append((usage, cost, items))
+        keep(wire)
+        insert(index, prev, "".join(chunks), adaptor.finish(acc),
                [{"path": pending, "mime_type": mime}] if pending else [],
-               usage, cost, items, -1, "cancelled")
+               results, usage, cost, items, -1, "cancelled", wire)
         conn.commit()
+        usage, items = price.merged(rounds)
         report(verbosity, 1,
                summary(usage, items, None, stamps, verbosity),
                err=err, env=env)
@@ -503,29 +617,22 @@ def dic(prompt,
         # mid-repaint: close the line, and record the attempt with the same -1
         # a stream that failed after a 200 gets, so a job that never answered
         # is still countable and its row is never continued by -c
-        stamps["t_last"] = stamps["t_done"] = time.time_ns()
+        wire["t_last"] = wire["t_done"] = time.time_ns()
         close_meters()
         pending = sink.pending()
         sink.abandon()
-        usage, cost, items = billing()
-        insert(ulid(), "".join(chunks), adaptor.finish(acc),
+        usage, cost, items = billing(acc)
+        rounds.append((usage, cost, items))
+        keep(wire)
+        insert(index, prev, "".join(chunks), adaptor.finish(acc),
                [{"path": pending, "mime_type": mime}] if pending else [],
-               usage, cost, items, stamps.get("status") or -1, str(e))
+               results, usage, cost, items, stamps.get("status") or -1, str(e),
+               wire)
         conn.commit()
         raise
-    stamps["t_last"] = time.time_ns()
-    close_meters()
-    sink.end_blob()
-    if acc.get("error"):
-        # a stream that failed after a 200: -1 keeps the row out of the
-        # averages, inside the error count, and off the session pointer,
-        # exactly like a call that never reached the network
-        stamps["status"], stamps["error"] = -1, acc["error"]
-    elif stamps["status"] is None:
-        # a call() adaptor replaces the transport and never sees a wire
-        # status; a stream that ran to its end is a 200
-        stamps["status"] = 200
-    response = "".join(chunks)
+    wire["t_done"] = stamps["t_done"] = time.time_ns()
+    keep(wire)
+    response = "".join(printed)
     text = response
     if knobs["extract"]:
         text = code_block(response)
@@ -536,19 +643,17 @@ def dic(prompt,
         if response and not response.endswith("\n"):
             sink.write("\n")
             text += "\n"
-    outputs = [{"path": p, "mime_type": mime} for p in sink.close()]
+    paths = sink.close()
+    outputs = [{"path": p, "mime_type": mime} for p in paths[seen:]]
 
-    usage, cost, items = billing()
-    mid = ulid()
-    stamps["t_done"] = time.time_ns()
-    insert(mid, response, adaptor.finish(acc), outputs, usage, cost, items,
-           stamps["status"], stamps["error"])
+    mid = insert(index, prev, "".join(chunks), raw, outputs, results,
+                 usage, cost, items, wire["status"], wire.get("error"), wire)
     conn.commit()
     conn.close()
     # a failed attempt is recorded for the error rate but the session pointer
     # is left alone, so the row is always a leaf and never replayed
-    if stamps["status"] != 200:
-        raise DicError(f"{stamps['status']} {stamps['error']}")
+    if wire["status"] != 200:
+        raise DicError(f"{wire['status']} {wire.get('error')}")
     session_write(mid, env)
 
     out.flush()
@@ -557,13 +662,16 @@ def dic(prompt,
         # a 200 that stopped because it ran out of room: the answer above is
         # cut off, and nothing else about the call says so
         report(verbosity, 1, f"truncated: {acc['stop']}", err=err, env=env)
+    # a tool loop is several calls for one answer, so the line a user reads
+    # is the sum of every round it took, not the last one's
+    usage, items = price.merged(rounds)
     report(verbosity, 1,
            summary(usage, items, mid, stamps, verbosity),
            err=err, env=env)
-    return Reply(text=text, raw=adaptor.finish(acc), mid=mid,
+    return Reply(text=text, raw=raw, mid=mid,
                  model_id=model["model_id"], api_type=api_type,
-                 status=stamps["status"], error=stamps["error"],
-                 usage=usage, paths=[o["path"] for o in outputs], mime=mime,
+                 status=wire["status"], error=wire.get("error"),
+                 usage=usage, paths=paths, mime=mime,
                  timings=stamps)
 
 

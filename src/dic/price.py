@@ -158,6 +158,35 @@ def rate(model, usage, facts):
     return total, items
 
 
+def merged(rounds):
+    """(usage, items): several rounds' billing as though it were one call.
+
+    A tool loop is several paid requests for one answer, so the line a user
+    reads is the sum of them: the quantities add up by name, and the
+    itemizations merge rule by rule, so a call of one round and a call of five
+    read the same.
+
+    >>> model = {"price": {"in": {"rate": 3.0}}}
+    >>> a = ({"in": 1000}, *rate(model, {"in": 1000}, facts({"in": 1000})))
+    >>> b = ({"in": 500}, *rate(model, {"in": 500}, facts({"in": 500})))
+    >>> usage, items = merged([a, b])
+    >>> usage["in"], items[0]["qty"], round(items[0]["cost"], 6)
+    (1500, 1500, 0.0045)
+    """
+    usage, items = {}, {}
+    for round_usage, _, round_items in rounds:
+        for name, qty in round_usage.items():
+            usage[name] = usage.get(name, 0) + qty
+        for item in round_items:
+            key = (item["rule"], item["key"], item["rate"])
+            if key in items:
+                items[key]["qty"] += item["qty"]
+                items[key]["cost"] += item["cost"]
+            else:
+                items[key] = dict(item)
+    return usage, list(items.values())
+
+
 def price_hash(model):
     """A short name for the table a row was rated under, stored with the row.
 

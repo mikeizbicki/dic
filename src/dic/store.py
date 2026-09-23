@@ -26,7 +26,7 @@ from dic.tty import DicError
 # version of dic migrates another one: dic is pre-release, so an older file is
 # not upgraded but reported with the rm that removes it, because a database
 # that is only nearly right fails later as a confusing sqlite error.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS messages (
     prev_mid TEXT,
     attachments TEXT,
     outputs TEXT,                -- the files this turn produced: {path, mime_type}
+    tool_results TEXT,           -- what this round's tools answered, and how long
     model_id TEXT,
     api_type TEXT,
     status INTEGER,              -- HTTP status, NULL if we never got one
@@ -68,8 +69,9 @@ CREATE INDEX IF NOT EXISTS messages_prev_mid ON messages(prev_mid);
 -- is a view: nothing is materialized, nothing can go stale, and no python
 -- computes a statistic.  A provider is the head of the model_id chain.
 CREATE VIEW IF NOT EXISTS stats AS SELECT
-    mid, model_id, api_type, status,
+    mid, round, model_id, api_type, status,
     cost, price_hash,
+    coalesce(json_array_length(tool_results), 0) AS tools,
     substr(model_id, 1, instr(model_id || '+', '+') - 1) AS provider,
     t_start / 1000000000 AS time,
     (t_connect - t_start)  / 1e6 AS ms_connect,
@@ -109,10 +111,11 @@ CREATE TABLE IF NOT EXISTS config_meta (
 # The columns a row is written with, in the order messages declares them.  The
 # generated columns are not among them and cannot be: sqlite refuses to have
 # them written, which is the point of them.
-COLUMNS = ("mid", "user", "system", "response", "response_raw", "prev_mid",
-           "attachments", "outputs", "model_id", "api_type", "status", "error",
-           "usage", "cost", "cost_items", "price_hash", "t_start", "t_connect",
-           "t_request", "t_headers", "t_first", "t_last", "t_done")
+COLUMNS = ("mid", "round", "user", "system", "response", "response_raw",
+           "prev_mid", "attachments", "outputs", "tool_results", "model_id",
+           "api_type", "status", "error", "usage", "cost", "cost_items",
+           "price_hash", "t_start", "t_connect", "t_request", "t_headers",
+           "t_first", "t_last", "t_done")
 INSERT = (f"INSERT INTO messages ({', '.join(COLUMNS)})"
           f" VALUES ({', '.join('?' * len(COLUMNS))})")
 
@@ -121,6 +124,7 @@ INSERT = (f"INSERT INTO messages ({', '.join(COLUMNS)})"
 # failed calls, which are counted separately.
 STATS = """
 SELECT model_id, count(*) AS n, sum(status <> 200) AS errors,
+       sum(round > 0) AS tool_rounds, sum(tools) AS tool_calls,
        round(avg(ms_overhead) FILTER (WHERE status = 200), 1) AS overhead,
        round(avg(ms_wait)     FILTER (WHERE status = 200), 1) AS wait,
        round(avg(ms_ttft)     FILTER (WHERE status = 200), 1) AS ttft,
@@ -131,6 +135,19 @@ SELECT model_id, count(*) AS n, sum(status <> 200) AS errors,
        , round(sum(cost), 4) AS cost
        , count(DISTINCT price_hash) AS price_versions
   FROM stats GROUP BY model_id ORDER BY n DESC
+"""
+
+# Which tools ran, and which of them failed: one row per tool call, read out of
+# the JSON that recorded it, because a tool result is a fact about a call and
+# not a table dic writes to.  A model and a tool, then their counts -- and a
+# duration, which is a subtraction like every other one here.
+TOOL_STATS = """
+SELECT model_id, json_extract(value, '$.name') AS tool,
+       count(*) AS n, sum(NOT json_extract(value, '$.ok')) AS errors,
+       round(avg((json_extract(value, '$.t_end')
+                  - json_extract(value, '$.t_start')) / 1e6), 1) AS ms
+  FROM messages, json_each(messages.tool_results)
+ GROUP BY model_id, tool ORDER BY n DESC
 """
 
 B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -283,8 +300,8 @@ def history(conn, mid):
     `model_id` is carried so that -c and --mid can continue the thread with the
     model that produced its last turn, unless -m names another.
     """
-    columns = ("mid,user,system,response,response_raw,prev_mid,model_id,"
-               "api_type,attachments,outputs")
+    columns = ("mid,round,user,system,response,response_raw,prev_mid,model_id,"
+               "api_type,attachments,outputs,tool_results")
     qualified = ",".join(f"m.{c}" for c in columns.split(","))
     rows = conn.execute(
         f"WITH RECURSIVE chain({columns}) AS ("
@@ -348,6 +365,9 @@ def turns_from_rows(conn, rows, api_type):
     and both are read back here, so continuing a conversation carries
     everything that was in it -- including a video a later turn is asked
     about -- and a file that has since gone is an error, not a dropped block.
+    A round that asked for tools is followed by the turn its tools answered
+    with, but only while the calls themselves survive: a result whose call was
+    dropped in conversion is a turn the API would reject.
     """
     turns = []
     for row in rows:
@@ -363,9 +383,15 @@ def turns_from_rows(conn, rows, api_type):
                  "blocks": [{"type": "text", "text": row["response"] or ""}]}
         for out in json.loads(row["outputs"] or "[]"):
             reply["blocks"].append(file_block(out["path"], out["mime_type"]))
-        if row["api_type"] == api_type and row["response_raw"]:
+        same = row["api_type"] == api_type and row["response_raw"]
+        if same:
             reply["raw"] = json.loads(row["response_raw"])
         turns.append(reply)
+        results = json.loads(row["tool_results"] or "[]") if same else []
+        if results:
+            turns.append({"role": "user", "blocks": [
+                {"type": "tool_result", "id": r["id"], "content": r["content"]}
+                for r in results]})
     return turns
 
 

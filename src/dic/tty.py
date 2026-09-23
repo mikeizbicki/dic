@@ -148,6 +148,14 @@ class Line:
         self.thread = None
         self.clock = False          # whether the clock owns the line now
 
+    def restart(self):
+        """Start this line's clock over: a tool loop is more than one request.
+
+        A call that stopped to run a tool waits again for its next first
+        token, so the ttft clock is the round's and not the call's.
+        """
+        self.start = time.time_ns()
+
     def elapsed(self):
         """Seconds since this line was made: one clock for every writer."""
         return (time.time_ns() - self.start) / 1e9
@@ -311,7 +319,11 @@ def summary(usage, items, mid, stamps, verbosity):
     def ms(start, end):
         return ((stamps.get(end) or 0) - (stamps.get(start) or 0)) / 1e6
 
-    stream_ms = ms("t_first", "t_last")
+    # a rate over a call that stopped to run a tool is not a rate, so the
+    # rounds' streams are summed and not their ends subtracted
+    stream_ms = (stamps.get("t_stream")
+                 or (stamps.get("t_last") or 0)
+                 - (stamps.get("t_first") or 0)) / 1e6
     counted = (usage.get("out") or 0) + (usage.get("out.reasoning") or 0)
     speed = counted / (stream_ms / 1000) if stream_ms else 0
     return line + (f" | overhead {ms('t_start', 't_request'):.0f}ms,"

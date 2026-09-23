@@ -228,8 +228,9 @@ All of it goes through one `report(verbosity, level, msg)` in `tty.py`.
 1. Tools work for importable python functions (`--tools`), but not for MCP
     servers, which are the same name, description and JSON Schema arriving over
     a pipe instead of over an import; that is the next piece of this.
-    The tool exchange of one call is not yet stored in the message tree -- only
-    the final turn is -- so a later `-c` cannot see what a tool did.
+    Every round of a loop is stored, so a later `-c` replays what a tool did,
+    but the tool itself is not re-run: `--tools` must be given again for the
+    model to be offered it.
 
 2. Many providers allow prompt caching to reduce cost of input tokens.
     It's not clear to me the best way to structure this from the cli or in the various config files.
@@ -270,6 +271,9 @@ but in `dic` conversations can have non-linear tree structures and are local to 
 The way this works is that all messages sent with `dic` have a "message id" or "mid" which serves as the primary key in a sqlite table "messages" located at `~/.config/fac/dic.db`.
 The messages table has the following columns:
 - `mid`: a ULID
+- `round`: which API call of this user turn the row is.  A call that used tools
+  is several requests for one answer, so each is a row of its own and `prev_mid`
+  chains them; the cost of a turn is the sum of its rounds.
 - `user`: the user prompt
 - `system`: the system prompt
 - `response`: the plain text of the API response, as streamed to stdout
@@ -278,6 +282,11 @@ The messages table has the following columns:
 - `attachments`: a list of indexes into the attachments table
 - `outputs`: the files this turn produced, as a JSON list of
   `{path, mime_type}`; the bytes live on disk exactly as an attachment's do
+- `tool_results`: what the tools this round asked for answered, as a JSON list
+  of `{id, name, ok, error, content, t_start, t_end}`.  `content` is what the
+  next round is sent, so a tool's answer survives `-c`; `ok` is false for a tool
+  that raised as much as for one that was never offered, so a failure rate is a
+  count of the rows where it is false.
 - `model_id`: the `model_id` used to generate the response
 - `api_type`: the wire protocol used to generate the response (see "Model configuration")
 - `status`, `error`: the HTTP status of the call and the server's message when it was not 200
@@ -324,11 +333,16 @@ difference of two of them, and subtraction is sqlite's job.
 | `t_last`    | the stream closed |
 | `t_done`    | the row is written, immediately before exit |
 
-So "time to first API call" — `dic`'s own overhead, including the interpreter, the
-config query, the history query and whichever adaptor was imported — is
-`t_request - t_start`, and it will show the cost of a tool loop or a slow adaptor
-when those exist.  Time to first token is `t_first - t_start`, generation rate is
-`tokens_output / (t_last - t_first)`, and end of response is `t_last - t_start`.
+These are the instants of one *round*, and a call that used tools has several.
+The first round's `t_start` is the process's, before every import but `time`; a
+later round's is where the round before it stopped, so `t_request - t_start` is
+that round's own overhead — `dic`'s own for the first round, including the
+interpreter, the config query, the history query and whichever adaptor was
+imported, and the tools that ran meanwhile for a later one.  Time to first token
+is `t_first - t_start`, generation rate is `tokens_output / (t_last - t_first)`,
+and end of response is `t_last - t_start`, all within one round; the rate of the
+turn as a whole is over the sum of its rounds' streams, which is why the dollars
+on the cost line are summed too.
 
 A failed call is stored too, with its `status` and `error` and an empty `response`,
 so that an error rate is countable and a provider's failures do not silently vanish.
@@ -361,6 +375,10 @@ Python joins the resulting cells with tabs and computes nothing; the output is
 therefore already `sort`- and `awk`-shaped.
 This query scans `messages` and will grow slower with the table, which is
 acceptable: `--stats` is never on the latency path.
+A second query over `json_each(tool_results)` is printed below it when a tool
+has run: each tool, per model, with how often it was called and how often it
+failed, because a tool that fails is a turn the model had to correct and not a
+call dic made.
 
 Grouping by `provider` instead, or filtering by `time`, is a matter of editing the
 one query — which is why the view stores the parts rather than the answers.
