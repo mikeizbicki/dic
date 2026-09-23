@@ -576,12 +576,15 @@ It is loaded by path, but it imports `dic`'s own modules by package name --
 This import happens only when a model that references it is actually selected,
 so it costs nothing at startup for everyone else.
 An adaptor may define `prepare(model, key, turns, params)` and
-`call(model, key, body, err, env, verbosity, stamps)` on top of the five
+`call(model, key, body, line, stamps)` on top of the five
 names above.  `prepare` runs before `build` and may rewrite the turns --
 `fal` uploads the newest turn's attachments there, because its models read a
 URL and not a data: URL.  `call` replaces the transport and yields the
 events `parse` already knows, which is what a protocol that polls and then
-answers with a file rather than a stream of tokens needs.
+answers with a file rather than a stream of tokens needs.  It repaints
+`line`, the one line dic keeps on stderr for progress, so a queued job's
+status reads like the ttft clock a slow token starts instead of scrolling a
+line of its own.
 
 
 ### Switching models mid-conversation

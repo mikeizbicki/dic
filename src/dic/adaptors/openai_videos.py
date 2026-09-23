@@ -15,7 +15,7 @@ Exports PATH, auth, build, call, parse, finish; see adaptors/openai_chat.py.
 import json, time, urllib.error, urllib.request
 
 from dic.store import multipart
-from dic.tty import DicError, report
+from dic.tty import DicError, pv_clock
 
 PATH = "/videos"
 POLL_MS = 1000
@@ -68,7 +68,7 @@ def fetch(request, decode=True):
         raise DicError(f"videos: {e}")
 
 
-def call(model, key, body, err, env, verbosity, stamps):
+def call(model, key, body, line, stamps):
     """Create the job, poll it, and yield its content as one blob.
 
     A failed job is never a silent empty file: it is reported with the error
@@ -99,7 +99,7 @@ def call(model, key, body, err, env, verbosity, stamps):
         if time.time() - start > POLL_S:
             raise DicError(f"videos: {model['model_name']} still {status}"
                            f" after {POLL_S}s")
-        report(verbosity, 1, f"videos: {status}", err=err, env=env)
+        line.status(f"videos: {status} {pv_clock(line.elapsed())}")
         time.sleep(POLL_MS / 1000)
     if status == "failed":
         message = (job.get("error") or {}).get("message") or "generation failed"

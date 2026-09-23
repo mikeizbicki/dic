@@ -129,40 +129,100 @@ def pv_paint(state, line, err=None, env=None):
 WAIT_DELAY = 0.5     # a first token faster than this needs no reassurance
 
 
+class Line:
+    """stderr's one repaintable line: the ttft clock, a meter, a poll status.
+
+    Progress is not content, so everything whose only job is to say that a
+    call is still running repaints the same line instead of printing a new
+    one: the answer never scrolls away and no two writers fight over one row
+    of the terminal.  The ttft clock starts it, and the first token, meter
+    update or job status ends it; one width is kept for all of them, so a
+    line that shrinks never leaves the tail of the one before it behind.
+    """
+    def __init__(self, err=None, env=None):
+        self.err = sys.stderr if err is None else err
+        self.env = env
+        self.state = {}             # pv_paint's width, shared by every writer
+        self.start = time.time_ns()
+        self.stop = None            # the clock thread's flag, once it is running
+        self.thread = None
+        self.clock = False          # whether the clock owns the line now
+
+    def elapsed(self):
+        """Seconds since this line was made: one clock for every writer."""
+        return (time.time_ns() - self.start) / 1e9
+
+    def paint(self, line):
+        """Repaint the line in place, in the reasoning gray."""
+        pv_paint(self.state, line, self.err, self.env)
+
+    def close(self):
+        """End the line, so the next thing written starts below it."""
+        if self.state.get("width"):
+            self.err.write("\n")
+            self.err.flush()
+            self.state["width"] = 0
+
+    def wait(self):
+        """Show a ticking ttft clock until the first token; nothing if it is fast.
+
+        A slow first token is indistinguishable from a hung program, so this
+        needs a thread: the main thread is blocked in a socket read until
+        exactly the moment the clock should stop.  A call whose first token
+        beats WAIT_DELAY never paints at all.
+        """
+        import threading
+        self.stop = threading.Event()
+
+        def tick():
+            while not self.stop.wait(0.1):
+                if self.elapsed() >= WAIT_DELAY:
+                    self.clock = True
+                    self.paint(f"ttft: {pv_clock(self.elapsed(), tenths=True)}")
+
+        self.thread = threading.Thread(target=tick, daemon=True)
+        self.thread.start()
+
+    def stop_clock(self):
+        """Stop the clock; whether it was showing anything on the line."""
+        if self.stop is None:
+            return False
+        self.stop.set()
+        self.thread.join()
+        self.stop = self.thread = None
+        showing, self.clock = self.clock, False
+        return showing
+
+    def first_token(self):
+        """The first token arrived: finish and close the line, if one is showing."""
+        if self.stop_clock():
+            self.paint(f"ttft: {pv_clock(self.elapsed(), tenths=True)}")
+        self.close()
+
+    def status(self, msg):
+        """A job status: end the clock like a token does, then repaint the line.
+
+        An adaptor whose call() polls says what it is waiting for here, so a
+        long job's progress is one more thing on stderr's one line and not a
+        line of its own; the first status supersedes the bare clock exactly
+        as the first token would.
+        """
+        if self.stop_clock():
+            self.paint(f"ttft: {pv_clock(self.elapsed(), tenths=True)}")
+            self.close()
+        self.paint(msg)
+
+
 def pv_waiter(err=None, env=None):
     """Tick a bare clock until the first token arrives; return its stopper.
 
-    A slow first token is indistinguishable from a hung program, so after
-    WAIT_DELAY seconds the line reads `ttft: 0:00:03.4` and keeps counting
-    in tenths, which is slow enough to read and fast enough to look alive.
-    This needs a thread because the main thread is blocked in a socket read
-    until exactly the moment the clock should stop; the stopper joins it, so
-    only one of the two ever writes to stderr, and then closes the line with
-    the final time -- if the clock was ever shown at all.
+    A caller that already owns a Line drives it with Line.wait and
+    Line.first_token directly; this is the one-line way to ask for just a
+    clock, and it is what the meter in client.py used to be.
     """
-    import threading
-    err = sys.stderr if err is None else err
-    state, start, stop = {}, time.time_ns(), threading.Event()
-
-    def seconds():
-        return (time.time_ns() - start) / 1e9
-
-    def tick():
-        while not stop.wait(0.1):
-            if seconds() >= WAIT_DELAY:
-                pv_paint(state, f"ttft: {pv_clock(seconds(), tenths=True)}", err, env)
-
-    thread = threading.Thread(target=tick, daemon=True)
-    thread.start()
-
-    def stopper():
-        stop.set()
-        thread.join()
-        if state.get("width"):
-            pv_paint(state, f"ttft: {pv_clock(seconds(), tenths=True)}", err, env)
-            err.write("\n")
-            err.flush()
-    return stopper
+    line = Line(err, env)
+    line.wait()
+    return line.first_token
 
 
 def pv_update(state, text=None, final=False, err=None, env=None):

@@ -17,7 +17,7 @@ adaptors/openai_chat.py for the contract.
 """
 import json, os, time, urllib.error, urllib.request
 
-from dic.tty import DicError, report
+from dic.tty import DicError, pv_clock
 
 PATH = ""                              # the model name is the path; see call()
 QUEUE = "https://queue.fal.run"
@@ -206,13 +206,14 @@ def asset_url(result):
     raise DicError(f"fal: no asset in {json.dumps(result)[:200]}")
 
 
-def call(model, key, body, err, env, verbosity, stamps):
+def call(model, key, body, line, stamps):
     """Submit the job, poll it, and yield its result and its bytes.
 
     fal is a queue: POST returns an id, GET on the id's status says whether
     the job is done, and GET on the id says what it made.  The asset the
     result names is fetched here, so the bytes reach the client as a blob
-    and land in the file --path chose.
+    and land in the file --path chose.  A poll repaints `line` rather than
+    printing a line of its own.
     """
     base = f"{model['api_base'].rstrip('/')}/{model['model_name']}"
     headers = {"Content-Type": "application/json", **auth(key),
@@ -236,7 +237,7 @@ def call(model, key, body, err, env, verbosity, stamps):
         if time.time() - start > POLL_S:
             raise DicError(f"fal: {model['model_name']}: still {state}"
                            f" after {POLL_S}s")
-        report(verbosity, 1, f"fal: {state}", err=err, env=env)
+        line.status(f"fal: {state} {pv_clock(line.elapsed())}")
         time.sleep(POLL_MS / 1000)
     result = fetch(urllib.request.Request(f"{base}/requests/{job}",
                                           headers=headers))

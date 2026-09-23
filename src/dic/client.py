@@ -23,7 +23,7 @@ from dic.options import flag, resolve
 from dic.store import (INSERT, STATS, config_dir, db, history, normalize,
                        session_read, session_write, store_attachment,
                        turns_from_rows, ulid)
-from dic.tty import (BLUE, RESET, THINKING, DicError, pv_update, pv_waiter,
+from dic.tty import (BLUE, RESET, THINKING, DicError, Line, pv_update,
                      report, summary, use_color)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -317,14 +317,14 @@ def dic(prompt,
                    else knobs["pv_response"])
     pv = {"name": "thinking"} if pv_thinking else None
     pv_resp = {"name": "response"} if pv_response else None
-    waiter = pv_waiter(err=err, env=env) if pv is not None or pv_resp is not None else None
+    line = Line(err, env)
+    if pv is not None or pv_resp is not None:
+        line.wait()             # a bare ttft clock until something arrives
 
     def close_meters():
         """Stop the wait clock and close each meter, so nothing repaints after."""
-        nonlocal waiter
-        if waiter is not None:  # an error, a cancel, or a reply with no text
-            waiter()
-            waiter = None
+        # an error, a cancel, or a reply with no text; also ends a poll status
+        line.first_token()
         if pv is not None:      # a reply that was nothing but reasoning
             pv_update(pv, final=True, err=err, env=env)
         if pv_resp is not None:
@@ -362,7 +362,7 @@ def dic(prompt,
 
     try:
         call = getattr(adaptor, "call", None)
-        stream = (call(model, api_key, body, err, env, verbosity, stamps)
+        stream = (call(model, api_key, body, line, stamps)
                   if call is not None else
                   events(model["api_base"], adaptor.PATH, headers, body, stamps))
         for event in stream:
@@ -372,9 +372,7 @@ def dic(prompt,
             if kind != "blob":
                 sink.end_blob()         # a blob ends when anything else arrives
             stamps.setdefault("t_first", time.time_ns())
-            if waiter is not None:      # the wait is over, whatever arrived
-                waiter()
-                waiter = None
+            line.first_token()          # the wait is over, whatever arrived
             if kind == "thinking":
                 if pv is not None:
                     pv_update(pv, chunk, err=err, env=env)
@@ -428,6 +426,11 @@ def dic(prompt,
             report(verbosity, 1, f"partial output left at {pending}",
                    err=err, env=env)
         raise
+    except DicError:
+        # a call() adaptor reports a failure by raising, so nothing has ended
+        # the line it may have left mid-repaint; close it before die() writes
+        close_meters()
+        raise
     stamps["t_last"] = time.time_ns()
     close_meters()
     sink.end_blob()
@@ -436,6 +439,10 @@ def dic(prompt,
         # averages, inside the error count, and off the session pointer,
         # exactly like a call that never reached the network
         stamps["status"], stamps["error"] = -1, acc["error"]
+    elif stamps["status"] is None:
+        # a call() adaptor replaces the transport and never sees a wire
+        # status; a stream that ran to its end is a 200
+        stamps["status"] = 200
     response = "".join(chunks)
     text = response
     if knobs["extract"]:
@@ -460,7 +467,6 @@ def dic(prompt,
     # is left alone, so the row is always a leaf and never replayed
     if stamps["status"] != 200:
         raise DicError(f"{stamps['status']} {stamps['error']}")
-        die(f"{code}{stamps['error']}", err=err, env=env)
     session_write(mid, env)
 
     out.flush()

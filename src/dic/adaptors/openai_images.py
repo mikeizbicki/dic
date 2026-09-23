@@ -65,7 +65,7 @@ def fetch(request):
         raise DicError(f"images: {e}")
 
 
-def call(model, key, body, err, env, verbosity, stamps):
+def call(model, key, body, line, stamps):
     """POST the request and yield the image bytes as one blob event.
 
     A turn with attachments goes to /images/edits as multipart and one
