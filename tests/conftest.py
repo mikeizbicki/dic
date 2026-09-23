@@ -4,13 +4,14 @@ on 127.0.0.1, and streams whose isatty() a test controls.
 Only the network is faked, so a test runs the code a user runs -- config file,
 sqlite, request body, streamed events, the row -- and asserts on what came out.
 """
-import collections, http.server, io, json, os, sys, threading
+import collections, http.server, io, json, os, subprocess, sys, threading
 
 import pytest
 
 # so `pytest tests/` works from a checkout, the way `pytest src/` does
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                os.pardir, "src"))
+SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                   os.pardir, "src")
+sys.path.insert(0, SRC)
 
 from dic.store import config_dir
 
@@ -151,3 +152,21 @@ def models(env, sse):
 def model(models):
     """The id of the model a test uses unless it names another one."""
     return "fake"
+
+
+@pytest.fixture
+def dic_run(env):
+    """Run one real `dic` process against this test's environment.
+
+    An in-process dic() call cannot see startup: pytest has imported every
+    module before the test runs.  A test that measures the process therefore
+    starts one the way a user does, `python -m dic`.  PYTHONPATH is the same
+    checkout `sys.path` above points at, and python_flags=("-S",) is how a
+    test asks whether the standard library alone is enough to start.
+    """
+    def run(*argv, python_flags=()):
+        return subprocess.run(
+            [sys.executable, *python_flags, "-m", "dic", *argv],
+            env={**os.environ, **env, "PYTHONPATH": SRC},
+            stdin=subprocess.DEVNULL, capture_output=True, check=True)
+    return run

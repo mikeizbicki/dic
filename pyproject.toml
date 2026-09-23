@@ -22,3 +22,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 dic = ["models.json"]
+
+[tool.pytest.ini_options]
+markers = ["slow: starts a real dic process; left out of the default run"]
+addopts = "-m 'not slow'"
