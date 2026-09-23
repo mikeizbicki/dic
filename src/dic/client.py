@@ -297,13 +297,16 @@ def dic(prompt,
     turns = normalize(turns)
 
     opts = options(model, knobs["option"])
+    prepare = getattr(adaptor, "prepare", None)
+    if prepare is not None:            # fal reads URLs, so files go up first
+        turns = prepare(model, api_key, turns, opts)
     body = adaptor.build(model, turns, system, opts)
     headers = {"content-type": "application/json", "accept": "text/event-stream"}
     headers.update(adaptor.auth(api_key))
     headers.update(model.get("headers") or {})
 
     report(verbosity, 3,
-           f"POST {model['api_base']}{adaptor.PATH} {json.dumps(body)}",
+           f"POST {model['api_base']}{adaptor.PATH} {json.dumps(body, default=str)}",
            err=err, env=env)
     stamps = {"t_start": t_start, "status": None, "error": None}
     acc, chunks, painted = {}, [], None
@@ -358,7 +361,11 @@ def dic(prompt,
     paint = use_color(out, env) and knobs["path"] is None
 
     try:
-        for event in events(model["api_base"], adaptor.PATH, headers, body, stamps):
+        call = getattr(adaptor, "call", None)
+        stream = (call(model, api_key, body, err, env, verbosity, stamps)
+                  if call is not None else
+                  events(model["api_base"], adaptor.PATH, headers, body, stamps))
+        for event in stream:
             chunk, kind = adaptor.parse(event, acc)
             if not chunk:
                 continue

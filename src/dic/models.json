@@ -62,4 +62,78 @@
 
   "openrouter+deepseek":     {"model_name": "deepseek/deepseek-v4.1-flash", "cost_input": 0.15, "cost_output": 0.60},
   "openrouter+gemini-flash": {"model_name": "google/gemini-3.8-flash",     "cost_input": 0.75, "cost_output": 0.75}
+
+  ,"fal": {
+    "abstract": true,
+    "api_type": "fal",
+    "api_base": "https://queue.fal.run",
+    "api_key_name": "FAL_KEY"
+  },
+
+  "fal+nano-banana":     {"model_name": "fal-ai/nano-banana",     "output": "image/png", "price": {"out": {"rate": 0.04, "unit": "image"}}},
+  "fal+nano-banana-pro": {"model_name": "fal-ai/nano-banana-pro", "output": "image/png", "price": {"out": {"rate": 0.15, "unit": "image"}}},
+  "fal+nano-banana-2":   {"model_name": "fal-ai/nano-banana-2",   "output": "image/png", "price": {"out": {"rate": 0.08, "unit": "image"}}},
+
+  "fal+nano-banana-edit":     {"model_name": "fal-ai/nano-banana/edit",     "output": "image/png", "price": {"out": {"rate": 0.04, "unit": "image"}}},
+  "fal+nano-banana-pro-edit": {"model_name": "fal-ai/nano-banana-pro/edit", "output": "image/png", "price": {"out": {"rate": 0.15, "unit": "image"}}},
+  "fal+nano-banana-2-edit":   {"model_name": "fal-ai/nano-banana-2/edit",   "output": "image/png", "price": {"out": {"rate": 0.08, "unit": "image"}}},
+
+  "fal+gpt-image-2": {
+    "model_name": "fal-ai/openai/gpt-image-2",
+    "output": "image/png",
+    "price": {"in": {"rate": 5.00}, "in.image": {"rate": 8.00}, "out": {"rate": 30.00}}
+  },
+
+  "fal+veo3.1":      {"model_name": "fal-ai/veo3.1/first-last-frame-to-video",      "output": "video/mp4", "price": {"out": {"rate": 0.20, "unit": "second"}}},
+  "fal+veo3.1-fast": {"model_name": "fal-ai/veo3.1/fast/first-last-frame-to-video", "output": "video/mp4", "price": {"out": {"rate": 0.10, "unit": "second"}}},
+
+  "fal+kling-v3-pro":      {"model_name": "fal-ai/kling-video/v3/pro/image-to-video",      "output": "video/mp4", "price": {"out": {"rate": 0.112, "unit": "second"}}},
+  "fal+kling-v3-standard": {"model_name": "fal-ai/kling-video/v3/standard/image-to-video", "output": "video/mp4", "price": {"out": {"rate": 0.084, "unit": "second"}}},
+
+  "fal+kling-v2.6-pro":      {"model_name": "fal-ai/kling-video/v2.6/pro/image-to-video",      "output": "video/mp4", "price": {"out": {"rate": 0.07, "unit": "second"}}},
+  "fal+kling-v2.6-standard": {"model_name": "fal-ai/kling-video/v2.6/standard/image-to-video", "output": "video/mp4", "price": {"out": {"rate": 0.042, "unit": "second"}}},
+
+  "fal+kling-turbo-pro":      {"model_name": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",      "output": "video/mp4", "price": {"out": {"rate": 0.07, "unit": "second"}}},
+  "fal+kling-turbo-standard": {"model_name": "fal-ai/kling-video/v2.5-turbo/standard/image-to-video", "output": "video/mp4", "price": {"out": {"rate": 0.042, "unit": "second"}}},
+
+  "fal+kling-o1":         {"model_name": "fal-ai/kling-video/o1/image-to-video",         "output": "video/mp4", "price": {"out": {"rate": 0.112, "unit": "second"}}},
+  "fal+kling-o3-pro":     {"model_name": "fal-ai/kling-video/o3/pro/image-to-video",     "output": "video/mp4", "price": {"out": {"rate": 0.112, "unit": "second"}}},
+  "fal+kling-o3-standard":{"model_name": "fal-ai/kling-video/o3/standard/image-to-video","output": "video/mp4", "price": {"out": {"rate": 0.084, "unit": "second"}}},
+
+  "fal+seedance-2.0": {"model_name": "fal-ai/bytedance/seedance-2.0/image-to-video", "output": "video/mp4", "price": {"out": {"rate": 0.3034, "unit": "second"}}},
+
+  "fal+fabric-1.0":  {"model_name": "fal-ai/veed/fabric-1.0",  "output": "video/mp4", "price": {"out": {"rate": 0.08,  "unit": "second"}}},
+  "fal+aurora":      {"model_name": "fal-ai/creatify/aurora",  "output": "video/mp4", "price": {"out": {"rate": 0.14,  "unit": "second"}}},
+
+  "fal+omnihuman":       {"model_name": "fal-ai/bytedance/omnihuman/v1.5",      "output": "video/mp4", "price": {"out": {"rate": 0.16,   "unit": "second"}}},
+  "fal+kling-avatar-pro":      {"model_name": "fal-ai/kling-video/v1/pro/ai-avatar",      "output": "video/mp4", "price": {"out": {"rate": 0.115,  "unit": "second"}}},
+  "fal+kling-avatar-standard": {"model_name": "fal-ai/kling-video/v1/standard/ai-avatar", "output": "video/mp4", "price": {"out": {"rate": 0.0562, "unit": "second"}}},
+
+  "fal+mmaudio-v2":  {"model_name": "fal-ai/mmaudio-v2",  "output": "video/mp4", "price": {"out": {"rate": 0.001,  "unit": "second"}}},
+  "fal+sfx-v1":      {"model_name": "fal-ai/mirelo-ai/sfx-v1/video-to-video", "output": "video/mp4", "price": {"out": {"rate": 0.007,  "unit": "second"}}},
+  "fal+pixverse-sfx":{"model_name": "fal-ai/pixverse/sound-effects", "output": "video/mp4", "price": {"out": {"rate": 0.02,   "unit": "second"}}},
+  "fal+cassette-sfx":{"model_name": "fal-ai/cassetteai/video-sound-effects-generator", "output": "video/mp4", "price": {"out": {"rate": 0.0034, "unit": "second"}}},
+
+  "openai-images": {
+    "abstract": true,
+    "api_type": "openai-images",
+    "api_base": "https://api.openai.com/v1",
+    "api_key_name": "OPENAI_API_KEY"
+  },
+
+  "openai-images+gpt-image-1": {
+    "model_name": "gpt-image-1",
+    "output": "image/png",
+    "price": {"in": {"rate": 5.00}, "in.image": {"rate": 10.00}, "out": {"rate": 40.00}}
+  },
+
+  "openai-videos": {
+    "abstract": true,
+    "api_type": "openai-videos",
+    "api_base": "https://api.openai.com/v1",
+    "api_key_name": "OPENAI_API_KEY"
+  },
+
+  "openai-videos+sora-2":     {"model_name": "sora-2",     "output": "video/mp4", "price": {"out": {"rate": 0.10, "unit": "second"}}},
+  "openai-videos+sora-2-pro": {"model_name": "sora-2-pro", "output": "video/mp4", "price": {"out": {"rate": 0.50, "unit": "second"}}}
 }

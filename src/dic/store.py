@@ -196,6 +196,38 @@ def openai_usage(usage):
         "out.reasoning": reasoning})
 
 
+def multipart(fields, files, field="image"):
+    """A multipart/form-data body, as (bytes, content-type).
+
+    /images/edits and /videos take their parameters as form fields and their
+    reference files as file parts, so those two are the only requests dic
+    cannot send as JSON -- and this is the one place it builds a body by
+    hand.  `files` is IR blocks, whose bytes and mime type are already in
+    hand; their names go into each part so the server sees what was uploaded.
+
+    >>> body, ctype = multipart({"model": "m"}, [
+    ...     {"type": "image", "mime_type": "image/png",
+    ...      "path": "a.png", "data": b"hi"}])
+    >>> b"name=\\"model\\"" in body, ctype.startswith("multipart/form-data; boundary=")
+    (True, True)
+    """
+    boundary = "----dic" + os.urandom(12).hex()
+    out = bytearray()
+    for name, value in fields.items():
+        out += (f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n").encode()
+    for block in files:
+        name = os.path.basename(block.get("path") or field)
+        out += (f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{field}";'
+                f' filename="{name}"\r\n'
+                f"Content-Type: {block['mime_type']}\r\n\r\n").encode()
+        out += block["data"] + b"\r\n"
+    out += f"--{boundary}--\r\n".encode()
+    return bytes(out), f"multipart/form-data; boundary={boundary}"
+
+
 # ---------------------------------------------------------------- sqlite
 
 def config_dir(env):

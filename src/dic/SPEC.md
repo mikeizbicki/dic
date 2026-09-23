@@ -560,6 +560,9 @@ builds a request body and parses a stream of server-sent events.
 | `openai-chat`        | the default; also OpenRouter, Groq, Together, vLLM, llama.cpp, ollama, ... |
 | `openai-responses`   | OpenAI's newer endpoint |
 | `anthropic-messages` | Anthropic's native endpoint |
+| `openai-images`      | OpenAI's /images/generations and /images/edits |
+| `openai-videos`      | OpenAI's /videos: create, poll, download |
+| `fal`                | fal.ai's queue API: submit, poll, fetch |
 
 Note that Anthropic also offers an OpenAI-compatible shim at the same `api_base`,
 which can be used with `api_type: openai-chat`,
@@ -572,6 +575,14 @@ It is loaded by path, but it imports `dic`'s own modules by package name --
 `from dic.store import data_url` -- exactly as the built-in adapters do.
 This import happens only when a model that references it is actually selected,
 so it costs nothing at startup for everyone else.
+An adaptor may define `prepare(model, key, turns, params)` and
+`call(model, key, body, err, env, verbosity, stamps)` on top of the five
+names above.  `prepare` runs before `build` and may rewrite the turns --
+`fal` uploads the newest turn's attachments there, because its models read a
+URL and not a data: URL.  `call` replaces the transport and yields the
+events `parse` already knows, which is what a protocol that polls and then
+answers with a file rather than a stream of tokens needs.
+
 
 ### Switching models mid-conversation
 
