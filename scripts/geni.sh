@@ -19,7 +19,7 @@ function geni() {
     fi
 
     # generate and apply the patch
-    geni-mkpatch "$@"
+    geni-mkpatch "$@" || return $?
     geni-apply
 }
 
