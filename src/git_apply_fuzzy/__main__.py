@@ -20,6 +20,10 @@ rewritten -- each context line keeps the file's own version of itself,
 so a fuzzy match cannot "correct" a line of the file into the model's
 guess at it.
 
+The repository is not touched until every hunk has been located, so a
+patch that fails to match somewhere leaves it exactly as it was.
+`--force` opts back into writing the hunks that did apply.
+
     fuzzy-apply                     # .git/.geni-patchfile
     fuzzy-apply --dry-run -v
     fuzzy-apply -t 0.9 patch.diff
@@ -252,7 +256,7 @@ def main():
         sys.exit(f"fuzzy-apply: {args.patch}: no diff found")
 
     failed = False
-    applied = []                            # paths written, staged at the end
+    created, deleted, written = [], [], []  # planned changes, not yet made
     for entry in files:
         old = strip_path(entry["old"], args.strip)
         new = strip_path(entry["new"], args.strip)
@@ -261,26 +265,13 @@ def main():
         if old is None:                     # a new file: every hunk is an addition
             body = [line for _, hunk in entry["hunks"]
                          for tag, line in hunk if tag == "+"]
-            try:
-                if not args.dry_run:
-                    with open(path, "w") as handle:
-                        handle.writelines(body)
-                note(f"{path}: created ({len(body)} lines)")
-                applied.append(path)
-            except OSError as error:
-                note(f"{path}: {error}")
-                failed = True
+            created.append((path, body))
+            note(f"{path}: created ({len(body)} lines)")
             continue
 
         if new is None:                     # a deletion: every hunk is a removal
-            try:
-                if not args.dry_run:
-                    os.remove(path)
-                note(f"{path}: deleted")
-                applied.append(path)
-            except OSError as error:
-                note(f"{path}: {error}")
-                failed = True
+            deleted.append(path)
+            note(f"{path}: deleted")
             continue
 
         try:
@@ -303,21 +294,48 @@ def main():
             if not args.force:
                 note(f"{path}: {len(failures)}/{len(entry['hunks'])} hunks did not match")
                 continue
+        written.append((path, lines))
+        note(f"{path}: {len(matches)}/{len(entry['hunks'])} hunks applied")
+
+    # Only now is the tree touched: everything above just read it, so a
+    # hunk that does not match anywhere leaves the repository untouched,
+    # the way `git apply` does.  `--force` opts back into partial writes.
+    if failed and not args.force:
+        sys.exit(1)
+    if args.dry_run:
+        sys.exit(1 if failed else 0)
+
+    applied = []                            # paths written, staged at the end
+    for path, body in created:
         try:
-            if not args.dry_run:
-                with open(path, "w") as handle:
-                    handle.writelines(lines)
+            with open(path, "w") as handle:
+                handle.writelines(body)
         except OSError as error:
             note(f"{path}: {error}")
             failed = True
             continue
-        note(f"{path}: {len(matches)}/{len(entry['hunks'])} hunks applied")
+        applied.append(path)
+    for path in deleted:
+        try:
+            os.remove(path)
+        except OSError as error:
+            note(f"{path}: {error}")
+            failed = True
+            continue
+        applied.append(path)
+    for path, lines in written:
+        try:
+            with open(path, "w") as handle:
+                handle.writelines(lines)
+        except OSError as error:
+            note(f"{path}: {error}")
+            failed = True
+            continue
         applied.append(path)
 
-    if not args.dry_run:
-        for path in applied:
-            if not stage(path):
-                failed = True
+    for path in applied:
+        if not stage(path):
+            failed = True
 
     sys.exit(1 if failed else 0)
 
