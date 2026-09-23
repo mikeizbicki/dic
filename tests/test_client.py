@@ -10,6 +10,7 @@ import pytest
 
 from dic.client import dic
 from dic.store import db, session_path
+from dic.tty import DicError
 
 
 def say(streams, env, prompt, **knobs):
@@ -84,7 +85,7 @@ def test_mid_wins_over_continue(streams, env, sse, model, events):
 
 def test_a_failed_call_is_stored_and_leaves_the_pointer_alone(streams, env, sse, model):
     sse.status = 503
-    with pytest.raises(SystemExit):
+    with pytest.raises(DicError):
         say(streams, env, "hi", model=model)
 
     row = tree(env)[0]
@@ -95,7 +96,7 @@ def test_a_failed_call_is_stored_and_leaves_the_pointer_alone(streams, env, sse,
 
 
 def test_continue_without_a_session_pointer_is_an_error(streams, env, model):
-    with pytest.raises(SystemExit):
+    with pytest.raises(DicError):
         say(streams, env, "hi", model=model, cont=True)
 
     assert "no conversation" in streams.err.getvalue()
