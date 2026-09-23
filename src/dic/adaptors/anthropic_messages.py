@@ -142,11 +142,11 @@ def parse(event, acc):
     elif kind == "content_block_stop" and blocks:
         block = blocks[-1]
         if "_json" in block:
+            partial = block.pop("_json")   # popped once: json.loads may fail
             try:
-                block["input"] = json.loads(block.pop("_json") or "{}")
+                block["input"] = json.loads(partial or "{}")
             except ValueError:
-                block.pop("_json")      # a tool call cut off mid-arguments
-                block["input"] = {}
+                block["input"] = {}        # a tool call cut off mid-arguments
     elif kind == "message_delta":
         usage = event.get("usage") or {}
         acc["usage"] = (acc.get("usage", (None, None))[0],
