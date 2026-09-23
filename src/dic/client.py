@@ -493,4 +493,62 @@ def dic(prompt,
                  model_id=model["model_id"], api_type=api_type,
                  status=stamps["status"], error=stamps["error"],
                  usage=usage, paths=[o["path"] for o in outputs], mime=mime,
+
+
+# The pool generate_async shares, built once by _pool() on first use.  A
+# module global rather than a loop resource: it outlives any one event
+# loop, and a batch's threads are not a loop's to shut down.
+_POOL = {}
+
+
+def _pool():
+    """dic's own worker threads, made once and shared by every async call.
+
+    asyncio's default executor is a process-wide resource shared with every
+    run_in_executor(None, ...) in the interpreter, so a caller that filled
+    it would otherwise fill dic's.  One pool of dic's own is also one place
+    to cap concurrency: ThreadPoolExecutor's default cap (32 on most
+    machines) applies here, and a call past it waits its turn rather than
+    failing.
+    """
+    if "executor" not in _POOL:
+        import concurrent.futures
+        _POOL["executor"] = concurrent.futures.ThreadPoolExecutor(
+            thread_name_prefix="dic")
+    return _POOL["executor"]
+
+
+async def generate_async(prompt, **knobs):
+    """Talk to one model once without blocking the caller's event loop.
+
+    `generate_async(prompt, **knobs)` is `dic(prompt, **knobs)` run on a
+    worker thread of dic's own pool and awaited, so N concurrent calls are N
+    in-flight HTTP requests.  The gain is concurrency and not speed: one
+    call costs one thread and is no faster for it, which is why the CLI,
+    which makes exactly one call, never comes here.
+
+    Everything the sync call returns and raises is returned and raised
+    unchanged, so a caller needs no second `except`: a DicError raised in
+    the worker is the DicError that arrives, and a KeyboardInterrupt is the
+    caller's too, never swallowed by the machinery in between.
+
+    Cancelling the awaiting Task stops the caller and not the call.  A
+    thread cannot be interrupted at an await, so the worker runs to the end
+    of the reply and the row lands as it always did; the bytes it already
+    printed are not taken back, exactly as a ^C in the CLI leaves them.  A
+    half-recorded row would be worse than a thread that outlives its caller
+    by one call.
+
+    `asyncio` and `concurrent.futures` are imported here and not at module
+    level, because the sync path must not pay for a feature it does not use.
+
+    Import it as `from dic.client import generate_async`: dic/__init__ stays
+    empty, so importing the package costs nothing.
+
+    >>> print(asyncio.run(generate_async("hi")).text)   # doctest: +SKIP
+    hi
+    """
+    import asyncio
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_pool(), lambda: dic(prompt, **knobs))
                  timings=stamps)

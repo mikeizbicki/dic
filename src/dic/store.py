@@ -402,10 +402,16 @@ def session_read(env):
         return None
 
 
-def session_write(mid, env):
+    """Point this session at mid, atomically.
+
+    The temporary name is unique to this write and not merely to this
+    process: two concurrent calls in one process share a pid, so a batch
+    that finished two conversations at once would have had both rename the
+    one temp file, the loser finding it already gone.
+    """
     """Point this session at mid, atomically."""
     path = session_path(env)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
     tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w") as f:
         f.write(mid)
