@@ -26,11 +26,12 @@ from dic.tty import DicError
 # version of dic migrates another one: dic is pre-release, so an older file is
 # not upgraded but reported with the rm that removes it, because a database
 # that is only nearly right fails later as a confusing sqlite error.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
     mid TEXT PRIMARY KEY,
+    round INTEGER,               -- which API call of this user turn the row is
     user TEXT,
     system TEXT,
     response TEXT,
