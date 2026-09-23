@@ -18,7 +18,7 @@ entry point.
 """
 import http.client, json, os, re, sys, time, urllib.parse
 
-from dic import config, price
+from dic import config, output, price
 from dic.options import flag, resolve
 from dic.store import (INSERT, STATS, config_dir, db, history, normalize,
                        session_read, session_write, store_attachment,
@@ -44,11 +44,11 @@ class Reply:
     it is now and recorded on the row rather than returned.
     """
     __slots__ = ("text", "raw", "mid", "model_id", "api_type", "status",
-                 "error", "usage", "timings")
+                 "error", "usage", "paths", "mime", "timings")
 
     def __init__(self, text="", raw=None, mid=None, model_id=None,
                  api_type=None, status=None, error=None, usage=None,
-                 timings=None):
+                 paths=(), mime="text/plain", timings=None):
         self.text = text
         self.raw = raw
         self.mid = mid
@@ -57,6 +57,8 @@ class Reply:
         self.status = status
         self.error = error
         self.usage = usage or {}
+        self.paths = list(paths)
+        self.mime = mime
         self.timings = timings or {}
 
 
@@ -158,6 +160,12 @@ def dic(prompt,
                            help="override a model option") = (),
         extract:      flag(short="-x", action="bool",
                            help="print only the first fenced code block") = False,
+        path:         flag(long="--path", metavar="FILE",
+                           help="write the answer to FILE, atomically") = None,
+        force:        flag(short="-f", action="bool",
+                           help="overwrite the file named by --path") = False,
+        mime_type:    flag(long="--mime-type", metavar="TYPE",
+                           help="the mime type of the answer") = None,
         cont:         flag(short="-c", long="--continue", action="bool",
                            help="continue this session's last conversation") = False,
         mid:          flag(long="--mid", help="continue from a message id") = None,
@@ -260,6 +268,18 @@ def dic(prompt,
     if not api_key:
         raise DicError(f"{key_name} is not set")
 
+    # what the answer will be, settled before the call so that a missing or
+    # taken --path fails before the network instead of after a whole video
+    mime = knobs["mime_type"] or model.get("output") or "text/plain"
+    if mime.startswith("text/"):
+        output.check_free(knobs["path"], knobs["force"])
+    else:
+        if not knobs["path"]:
+            raise DicError(f"{mime}: a non-text answer needs --path FILE")
+        output.check_free(output.numbered(knobs["path"], 0), knobs["force"])
+    sink = output.Sink(path=knobs["path"], force=knobs["force"],
+                       out=out, err=err, env=env, verbosity=verbosity)
+
     turns, system = [], knobs["system"]
     if rows:
         turns = turns_from_rows(conn, rows, api_type)
@@ -322,57 +342,88 @@ def dic(prompt,
         total, items = price.rate(model, usage, facts)
         return usage, total, items
 
+    def insert(mid, response, raw, outputs, usage, cost, items, status, error):
+        """Append one turn to the tree: the reply, the failure, or the abort."""
+        conn.execute(INSERT,
+                     (mid, prompt, system, response, json.dumps(raw),
+                      prev_mid, json.dumps([att["aid"] for att in attached]),
+                      json.dumps(outputs), model["model_id"], api_type,
+                      status, error, json.dumps(usage) if usage else None,
+                      cost, json.dumps(items), price.price_hash(model),
+                      stamps["t_start"], stamps.get("t_connect"),
+                      stamps.get("t_request"), stamps.get("t_headers"),
+                      stamps.get("t_first"), stamps["t_last"],
+                      stamps["t_done"]))
+
+    paint = use_color(out, env) and knobs["path"] is None
+
     try:
         for event in events(model["api_base"], adaptor.PATH, headers, body, stamps):
-            text, kind = adaptor.parse(event, acc)
-            if not text:
+            chunk, kind = adaptor.parse(event, acc)
+            if not chunk:
                 continue
+            if kind != "blob":
+                sink.end_blob()         # a blob ends when anything else arrives
             stamps.setdefault("t_first", time.time_ns())
             if waiter is not None:      # the wait is over, whatever arrived
                 waiter()
                 waiter = None
             if kind == "thinking":
                 if pv is not None:
-                    pv_update(pv, text, err=err, env=env)
+                    pv_update(pv, chunk, err=err, env=env)
                 elif use_color(err, env):
-                    err.write(THINKING + text + RESET)
+                    err.write(THINKING + chunk + RESET)
                 else:
-                    err.write(text)
+                    err.write(chunk)
                 if pv is None:
                     err.flush()
                 continue
+            if kind == "blob":          # bytes: --path was checked above
+                sink.write_blob(chunk)
+                if pv_resp is not None:
+                    pv_update(pv_resp, chunk, err=err, env=env)
+                continue
             if pv is not None:      # the answer starts on a line of its own
                 pv_update(pv, final=True, err=err, env=env)
-            chunks.append(text)
+            chunks.append(chunk)
             if pv_resp is not None:
-                pv_update(pv_resp, text, err=err, env=env)
+                pv_update(pv_resp, chunk, err=err, env=env)
             if not knobs["extract"]:
-                if use_color(out, env) and painted != kind:
-                    out.write((RESET if painted is not None else "") + BLUE)
+                if paint and painted != kind:
+                    sink.write((RESET if painted is not None else "") + BLUE)
                     painted = kind
-                out.write(text)
-                out.flush()
+                sink.write(chunk)
     except KeyboardInterrupt:
         # A ^C is the caller's, not dic's: close what this call opened and let
         # it propagate, because only the entry point knows that for the CLI a
-        # cancelled call is a nonzero exit.  No row is written: a truncated
-        # response_raw is a thinking block whose signature never arrived, and
-        # replaying one is an error at the API.
+        # cancelled call is a nonzero exit.  The bytes already received are not
+        # thrown away: whatever was written stays in a .part, that name is on
+        # the row as this turn's output, and the error says what is on disk.
         stamps["t_last"] = stamps["t_done"] = time.time_ns()
         close_meters()
-        if not knobs["extract"]:            # nothing reached stdout in -x
+        if not knobs["extract"] and knobs["path"] is None:
             if painted is not None:         # do not leave stdout painted blue
                 out.write(RESET)
             if chunks and not chunks[-1].endswith("\n"):
                 out.write("\n")
             out.flush()
-        usage, _, items = billing()
+        pending = sink.pending()
+        sink.abandon()
+        usage, cost, items = billing()
+        insert(ulid(), "", adaptor.finish(acc),
+               [{"path": pending, "mime_type": mime}] if pending else [],
+               usage, cost, items, -1, "cancelled")
+        conn.commit()
         report(verbosity, 1,
                summary(usage, items, None, stamps, verbosity),
                err=err, env=env)
+        if pending:
+            report(verbosity, 1, f"partial output left at {pending}",
+                   err=err, env=env)
         raise
     stamps["t_last"] = time.time_ns()
     close_meters()
+    sink.end_blob()
     if acc.get("error"):
         # a stream that failed after a 200: -1 keeps the row out of the
         # averages, inside the error count, and off the session pointer,
@@ -382,25 +433,20 @@ def dic(prompt,
     text = response
     if knobs["extract"]:
         text = code_block(response)
+        sink.write(BLUE + text + RESET if paint else text)
     else:
         if painted is not None:
-            out.write(RESET)
+            sink.write(RESET)
         if response and not response.endswith("\n"):
-            out.write("\n")
+            sink.write("\n")
             text += "\n"
+    outputs = [{"path": p, "mime_type": mime} for p in sink.close()]
 
     usage, cost, items = billing()
     mid = ulid()
     stamps["t_done"] = time.time_ns()
-    conn.execute(INSERT,
-                 (mid, prompt, system, response, json.dumps(adaptor.finish(acc)),
-                  prev_mid, json.dumps([att["aid"] for att in attached]),
-                  model["model_id"], api_type, stamps["status"], stamps["error"],
-                  json.dumps(usage) if usage else None, cost, json.dumps(items),
-                  price.price_hash(model),
-                  stamps["t_start"], stamps.get("t_connect"), stamps.get("t_request"),
-                  stamps.get("t_headers"), stamps.get("t_first"), stamps["t_last"],
-                  stamps["t_done"]))
+    insert(mid, response, adaptor.finish(acc), outputs, usage, cost, items,
+           stamps["status"], stamps["error"])
     conn.commit()
     conn.close()
     # a failed attempt is recorded for the error rate but the session pointer
@@ -410,8 +456,6 @@ def dic(prompt,
         die(f"{code}{stamps['error']}", err=err, env=env)
     session_write(mid, env)
 
-    if knobs["extract"]:
-        out.write(BLUE + text + RESET if use_color(out, env) else text)
     out.flush()
 
     if acc.get("stop") in ("length", "max_tokens", "max_output_tokens"):
@@ -424,4 +468,5 @@ def dic(prompt,
     return Reply(text=text, raw=adaptor.finish(acc), mid=mid,
                  model_id=model["model_id"], api_type=api_type,
                  status=stamps["status"], error=stamps["error"],
-                 usage=usage, timings=stamps)
+                 usage=usage, paths=[o["path"] for o in outputs], mime=mime,
+                 timings=stamps)

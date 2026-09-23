@@ -49,6 +49,9 @@ Whenever possible, names and semantics remain the same as simonw's `llm`.
 | `-s`       | `--system`     | system prompt |
 | `-a`       | `--attachment` | attach the file |
 | `-x`       | `--extract`    | extracts first fenced code block |
+|            | `--path`       | write the answer to this file, atomically |
+| `-f`       | `--force`      | overwrite the file named by `--path` |
+|            | `--mime-type`  | the mime type of the answer |
 | `-c`       | `--continue`   | continue the previous conversation in this session |
 |            | `--mid`        | continue the conversation from the given message id |
 |            | `--pv-thinking` | show the reasoning stream as a one-line `pv`-style meter (the default) |
@@ -92,6 +95,30 @@ With `-c` or `--mid` the model is inherited from the message the conversation
 continues from, so a thread keeps its provider until the caller names another
 one; the full precedence is `-m`, then the inherited `model_id`, then
 `DIC_MODEL`, then the first configured entry whose key is exported.
+
+### Output
+
+The answer goes to stdout, unless `--path FILE` names a file instead, in which
+case the answer is written to `FILE.part` and renamed into place when the call
+ends: a reader sees a whole answer or none, and a cancelled call leaves the real
+path untouched and its partial bytes at the `.part` the error names.
+
+`-f` overwrites a file that is already there.  Without it, a file that exists
+when the call starts is an error *before* the network is touched -- a stale
+redirect must never be silently extended -- and a file that appears while the
+call is running is reported and left alone.
+
+`--mime-type` says what the answer will be.  It defaults to the model's `output`
+key, and to `text/plain` without one.  An answer that is not `text/*` is bytes
+and has no terminal form, so it is an error to ask for one without `--path`, and
+one blob is one file: a blob written to `FILE` is numbered `FILE-0.mp4`,
+`FILE-1.mp4`, because the stream does not say in advance how many it will carry.
+
+Every output file is also an input.  The row records the files its turn
+produced, exactly as it records the files its prompt attached, and `-c` or
+`--mid` sends both back to the next model: a conversation may generate a video
+and then ask a text model how well it answered the prompt.  A file a turn names
+that dic can no longer read is an error, never a turn that quietly loses it.
 
 ### Color
 
@@ -214,6 +241,8 @@ The messages table has the following columns:
 - `response_raw`: the provider's own JSON content blocks for the assistant turn, stored verbatim
 - `prev_mid`: (default NULL) previous `mid` if the conversation is multi-turn; importantly, two messages can share the same `prev_mid`, so the structure forms a tree and not a linked list
 - `attachments`: a list of indexes into the attachments table
+- `outputs`: the files this turn produced, as a JSON list of
+  `{path, mime_type}`; the bytes live on disk exactly as an attachment's do
 - `model_id`: the `model_id` used to generate the response
 - `api_type`: the wire protocol used to generate the response (see "Model configuration")
 - `status`, `error`: the HTTP status of the call and the server's message when it was not 200
@@ -335,10 +364,16 @@ If both are passed, `--mid` wins.
 If `-c` is passed and the session pointer does not exist, this is an error and `dic` exits nonzero;
 it must never silently start a new conversation or continue somebody else's.
 
-A third table `attachments` stores blobs of file attachments used with `-a`.
-It has a ULID as primary key; a `path` column, a `mime-type` column, and a `data` column which is the raw bytes of the attachment.
-Attachments are always stored as the original bytes and never in a provider's encoding,
-because the same attachment may later have to be re-encoded for a different provider.
+A third table `attachments` names the files attached with `-a`.
+It has a ULID as primary key, a `path`, the file's `hash`, and its `mime-type`.
+The file is the truth and is never copied: the bytes stay where the user put
+them and are re-encoded for whichever provider is next, so the same attachment
+serves a video model and a text model without existing twice.
+An attachment and an output are the same kind of thing -- both are files a turn
+names -- so both are recorded the same way and both are read back from disk when
+the conversation is rebuilt.
+A file a turn names that dic can no longer read is an error, never a turn that
+quietly loses it.
 
 ## Model configuration
 
@@ -424,6 +459,8 @@ Optional keys are:
    Unlike `DIC_SYSTEM` this is per-model, which is what a model-specific house style needs.
 6. `alias`: the shell alias and `-m` shorthand for this entry.
 7. `abstract`: this entry may only be inherited from.
+8. `output`: the mime type of the answer, so that a non-text model can demand
+   `--path` before the call is made; defaults to `text/plain`.
 
 The `options` and `headers` keys are the primary extensibility mechanism.
 Most new provider features are new JSON fields or new beta headers,
@@ -550,7 +587,10 @@ When building a request, `dic` walks the ancestor chain and for each historical 
    verbatim; this preserves full fidelity, provider signatures, and any prompt-cache prefix;
 2. otherwise the turn is converted through the intermediate representation.
 
-Text, system prompts, attachments and tool calls survive conversion.
+Text, system prompts, attachments and tool calls survive conversion, and a
+file a turn names is read from disk here: if it is gone the call fails, because
+a turn that silently loses its video is worse than a turn that refuses to be
+sent.
 Provider-specific opaque blocks do not:
 Anthropic `thinking` blocks carry signatures that are only valid for the model that produced them,
 and OpenAI reasoning items are encrypted.

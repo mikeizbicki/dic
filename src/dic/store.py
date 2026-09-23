@@ -18,7 +18,9 @@ A call's other output is its usage: a disjoint dict of what the API counted, in
 the names a price table has rules for, stored beside the cost those rules made
 of it.  `tokens` and `openai_usage` are how an adaptor builds one.
 """
-import base64, json, mimetypes, os, sqlite3, time
+import base64, hashlib, json, mimetypes, os, sqlite3, time
+
+from dic.tty import DicError
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -29,6 +31,7 @@ CREATE TABLE IF NOT EXISTS messages (
     response_raw TEXT,
     prev_mid TEXT,
     attachments TEXT,
+    outputs TEXT,                -- the files this turn produced: {path, mime_type}
     model_id TEXT,
     api_type TEXT,
     status INTEGER,              -- HTTP status, NULL if we never got one
@@ -74,11 +77,14 @@ CREATE VIEW IF NOT EXISTS stats AS SELECT
     1e9 * (tokens_output + coalesce(tokens_reasoning, 0))
         / nullif(t_last - t_first, 0) AS tok_per_sec
   FROM messages;
+-- An attachment is a file, and the file is the truth: the bytes are never
+-- copied into the database, so a video exists once however many turns name
+-- it, and the hash is kept to notice a file that changed under us.
 CREATE TABLE IF NOT EXISTS attachments (
     aid TEXT PRIMARY KEY,
     path TEXT,
-    mime_type TEXT,
-    data BLOB);
+    hash TEXT,
+    mime_type TEXT);
 CREATE TABLE IF NOT EXISTS config (
     id TEXT PRIMARY KEY,
     parent TEXT,
@@ -98,8 +104,8 @@ CREATE TABLE IF NOT EXISTS config_meta (
 # generated columns are not among them and cannot be: sqlite refuses to have
 # them written, which is the point of them.
 COLUMNS = ("mid", "user", "system", "response", "response_raw", "prev_mid",
-           "attachments", "model_id", "api_type", "status", "error", "usage",
-           "cost", "cost_items", "price_hash", "t_start", "t_connect",
+           "attachments", "outputs", "model_id", "api_type", "status", "error",
+           "usage", "cost", "cost_items", "price_hash", "t_start", "t_connect",
            "t_request", "t_headers", "t_first", "t_last", "t_done")
 INSERT = (f"INSERT INTO messages ({', '.join(COLUMNS)})"
           f" VALUES ({', '.join('?' * len(COLUMNS))})")
@@ -225,7 +231,7 @@ def history(conn, mid):
     model that produced its last turn, unless -m names another.
     """
     columns = ("mid,user,system,response,response_raw,prev_mid,model_id,"
-               "api_type,attachments")
+               "api_type,attachments,outputs")
     qualified = ",".join(f"m.{c}" for c in columns.split(","))
     rows = conn.execute(
         f"WITH RECURSIVE chain({columns}) AS ("
@@ -237,36 +243,73 @@ def history(conn, mid):
     return list(reversed(rows))
 
 
-def store_attachment(conn, path):
-    """Save a file's original bytes and return it as an image block.
+def file_block(path, mime_type=None):
+    """A file as an IR block: its name and type, and its bytes read now.
 
-    Originals, never a provider's encoding: the same attachment may have to be
-    re-encoded for a different provider later in the conversation.
+    The file is the truth, so it is read here and never stored; a path that
+    has since moved raises rather than becoming a turn that quietly lost its
+    video.
+
+    >>> file_block(__file__)["mime_type"]
+    'text/x-python'
     """
-    with open(path, "rb") as f:
-        data = f.read()
+    mime_type = (mime_type or mimetypes.guess_type(path)[0]
+                 or "application/octet-stream")
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        raise DicError(f"cannot read {path}: {e}")
+    return {"type": "image", "mime_type": mime_type, "path": path, "data": data}
+
+
+def store_attachment(conn, path):
+    """Record a file as an attachment and return it as an IR block.
+
+    The file is never copied: an attachment and an output are the same kind of
+    thing, so both are a path, a mime type and a hash, and both are re-read
+    from disk when the conversation is rebuilt.  The hash is kept so that a
+    file edited between two turns is visible in the row rather than silently
+    sent as if it had not changed.
+
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = os.path.join(d, "x.png")
+    ...     _ = open(p, "wb").write(b"hi")
+    ...     store_attachment(db({"HOME": d}), p)["path"] == p
+    True
+    """
     mime_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    with open(path, "rb") as f:
+        digest = hashlib.sha256(f.read()).hexdigest()
     aid = ulid()
     conn.execute("INSERT INTO attachments VALUES (?,?,?,?)",
-                 (aid, path, mime_type, data))
-    return {"aid": aid, "type": "image", "mime_type": mime_type, "data": data}
+                 (aid, path, digest, mime_type))
+    return dict(file_block(path, mime_type), aid=aid)
 
 
 def turns_from_rows(conn, rows, api_type):
-    """History rows to IR turns, keeping "raw" where the api_type still matches."""
+    """History rows to IR turns, keeping "raw" where the api_type still matches.
+
+    A prompt's attachments and a reply's outputs are both files the row names
+    and both are read back here, so continuing a conversation carries
+    everything that was in it -- including a video a later turn is asked
+    about -- and a file that has since gone is an error, not a dropped block.
+    """
     turns = []
     for row in rows:
         blocks = []
         for aid in json.loads(row["attachments"] or "[]"):
-            att = conn.execute("SELECT mime_type,data FROM attachments WHERE aid=?",
+            att = conn.execute("SELECT path,mime_type FROM attachments WHERE aid=?",
                                (aid,)).fetchone()
             if att:
-                blocks.append({"type": "image", "mime_type": att["mime_type"],
-                               "data": att["data"]})
+                blocks.append(file_block(att["path"], att["mime_type"]))
         blocks.append({"type": "text", "text": row["user"] or ""})
         turns.append({"role": "user", "blocks": blocks})
         reply = {"role": "assistant",
                  "blocks": [{"type": "text", "text": row["response"] or ""}]}
+        for out in json.loads(row["outputs"] or "[]"):
+            reply["blocks"].append(file_block(out["path"], out["mime_type"]))
         if row["api_type"] == api_type and row["response_raw"]:
             reply["raw"] = json.loads(row["response_raw"])
         turns.append(reply)

@@ -179,7 +179,8 @@ def pv_update(state, text=None, final=False, err=None, env=None):
     err = sys.stderr if err is None else err
     now = time.time_ns()
     if text is not None:
-        state["bytes"] = state.get("bytes", 0) + len(text.encode())
+        state["bytes"] = state.get("bytes", 0) + len(
+            text if isinstance(text, bytes) else text.encode())
         state.setdefault("t0", now)
     if "t0" not in state:
         return
