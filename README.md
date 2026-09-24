@@ -103,3 +103,11 @@ The register of a command says what kind of thing you are calling.
 - **English names deterministic machinery.** It does exactly what it says or it fails: `sandbox`, `git-apply-fuzzy`.
 
 A Latin verb always invokes the model; an English verb never touches it.
+
+## Security Model
+
+The latin names are intended to remind us about the potentially dangerous nature of working with LLMs.
+All tools should default to being 100% secure by design and not relying on the LLMs for security.
+The threat model is that a nation state level actor might be subverting us via responses,
+and we must be secure against everything up to kernel level exploits.
+The user can relax this model, but any commands to do so must be explicitly labeled --unsafe-*.
