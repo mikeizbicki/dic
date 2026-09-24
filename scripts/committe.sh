@@ -1,37 +1,37 @@
-# This file defines the minimal coding agent `geni`,
-# which is a thin wrapper around simonw's `llm` cli tool and git.
+# This file defines the minimal coding agent `committe`.
+# It takes a request / conversation and generates a git commit.
 # It is intended as a beginner-friendly intro to the "unix philosophy"
 # and how AI coding agents work.
 
-function geni() {
-    # only allow geni to run if the repo is clean
+function committe() {
+    # only allow committe to run if the repo is clean
     if ! git rev-parse --git-dir >/dev/null 2>&1; then
-        echo "geni-error: not inside a git repository" >&2
+        echo "committe-error: not inside a git repository" >&2
         return 1
     fi
     if ! git diff --quiet --cached; then
-        echo "geni-error: staging area is non-empty" >&2
+        echo "committe-error: staging area is non-empty" >&2
         return 1
     fi
     if ! git diff --quiet; then
-        echo "geni-error: working tree has uncommitted changes" >&2
+        echo "committe-error: working tree has uncommitted changes" >&2
         return 1
     fi
 
     # generate and apply the patch
-    geni-mkpatch "$@" || return $?
-    geni-apply
+    committe-mkpatch "$@" || return $?
+    committe-apply
 }
 
-function geni-patchfile() {
+function committe-patchfile() {
     # Output the absolute path to the temporary file that will store the patch.
-    # Everything goes under .git/.geni so it survives across invocations
+    # Everything goes under .git/.committe so it survives across invocations
     # and can be inspected when debugging a failed patch.
     # `git rev-parse --git-dir` works even from subdirectories of the repo.
-    echo "$(git rev-parse --git-dir)/.geni-patchfile"
+    echo "$(git rev-parse --git-dir)/committe-patchfile"
 }
 
-function geni-mkpatch() {
+function committe-mkpatch() {
     # `dic` is a more efficient version of simonw's `llm` command;
     # if available, we use `dic`; otherwise we use `llm`.
     if command -v dic >/dev/null 2>&1; then
@@ -39,20 +39,20 @@ function geni-mkpatch() {
     elif command -v llm >/dev/null 2>&1; then
         llm_command=llm
     else
-        echo "geni-error: neither dic nor llm installed" >&2
+        echo "committe-error: neither dic nor llm installed" >&2
         return 1
     fi
 
     # We pass the user's request as positional args to llm_command.
     # Use a subshell so `set -o pipefail` doesn't leak into the caller's shell.
-    if ! $llm_command -s "$(geni-prompt)" "$@" > "$(geni-patchfile)"; then
-        echo "geni-error: $llm_command failed" >&2
+    if ! $llm_command -s "$(committe-prompt)" "$@" > "$(committe-patchfile)"; then
+        echo "committe-error: $llm_command failed" >&2
         return 1
     fi
 }
 
-function geni-apply() {
-    local patch_file=$(geni-patchfile)
+function committe-apply() {
+    local patch_file=$(committe-patchfile)
 
     # We directly run `git apply` on the output of the llm.
     # `git apply` ignores any text before the first "diff --git" line,
@@ -63,11 +63,11 @@ function geni-apply() {
         # `git apply` needs every context line to match exactly, which the
         # model does not always manage; `git-apply-fuzzy` retries the patch
         # and tolerates small mismatches in the context lines.
-        echo "geni-warning: git apply failed, retrying with git-apply-fuzzy" >&2
+        echo "committe-warning: git apply failed, retrying with git-apply-fuzzy" >&2
         if ! git-apply-fuzzy "$patch_file"; then
-            echo "geni-error: git apply and git-apply-fuzzy both failed" >&2
-            echo "geni-hint: fix the raw patch at: $patch_file" >&2
-            echo "geni-hint: after fixing, rerun geni-apply" >&2
+            echo "committe-error: git apply and git-apply-fuzzy both failed" >&2
+            echo "committe-hint: fix the raw patch at: $patch_file" >&2
+            echo "committe-hint: after fixing, rerun committe-apply" >&2
             return 1
         fi
     fi
@@ -77,8 +77,8 @@ function geni-apply() {
     # and setting the committer fields.
     local commit_message
     commit_message="[geni] $(sed '/^diff --git/,$d' "$patch_file")"
-    if ! GIT_COMMITTER_NAME='geni' GIT_COMMITTER_EMAIL='geni@agent' git commit --quiet -m "$commit_message"; then
-        echo "geni-error: git commit failed" >&2
+    if ! GIT_COMMITTER_NAME='committe' GIT_COMMITTER_EMAIL='committe@agent' git commit --quiet -m "$commit_message"; then
+        echo "committe-error: git commit failed" >&2
         return 1
     fi
 
@@ -86,8 +86,8 @@ function geni-apply() {
     git show HEAD --stat --format='%h %s'
 }
 
-function geni-prompt() {
-    # Print the system prompt used by geni.
+function committe-prompt() {
+    # Print the system prompt used by committe.
     # It is a global function so that users can always run it to inspect the prompt.
     # All commands used in constructing the prompt must be side effect free.
     cat <<EOF

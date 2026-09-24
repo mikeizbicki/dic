@@ -79,3 +79,27 @@ The following features make `dic` more comfortable to use on the command line.
     - continuing a conversation (`-c`)
     - extracting markdown blocks (`-x`)
     - passing options to the model (`-o`)
+
+---
+
+# Framework
+
+**TODO:**
+Fix the whole readme and project structure to follow the framework lightly described here.
+`dic` was the first tool implemented, and that is why the README starts and focuses on it.
+
+`dic` is part of the `geni` framework.
+"Genius" is the Latin for the "demon" we are communicating with. 
+'geni' is the vocative/genitive which is the actual name of the library and all commits tagged with this because they belong to the genius.
+'geni' is more googlable than genius.
+Maybe in the future we will mak
+
+The register of a command says what kind of thing you are calling.
+
+- **Latin names a command given to the genius.** The model is nondeterministic, so the verb is a wish and not a guarantee: `dic` (speak), `committe` (the writes a git commit), `itera` (repeat until it is right), `fac` (make) is the build system.
+    These are all imperative singular latin verbs because we are ordering the "genium" to do something for us.
+    To the extent possible, the latin verb chosen should match what the English does (e.g. committe for commit)
+
+- **English names deterministic machinery.** It does exactly what it says or it fails: `sandbox`, `git-apply-fuzzy`.
+
+A Latin verb always invokes the model; an English verb never touches it.

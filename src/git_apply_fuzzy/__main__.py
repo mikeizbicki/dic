@@ -24,7 +24,7 @@ The repository is not touched until every hunk has been located, so a
 patch that fails to match somewhere leaves it exactly as it was.
 `--force` opts back into writing the hunks that did apply.
 
-    fuzzy-apply                     # .git/.geni-patchfile
+    fuzzy-apply                     # .git/committe-patchfile
     fuzzy-apply --dry-run -v
     fuzzy-apply -t 0.9 patch.diff
 """
@@ -71,7 +71,7 @@ def strip_path(path, n):
 def parse(text):
     """A unified diff as a list of {old, new, hunks}.
 
-    Anything before the first `diff --git` (geni's commit message) is
+    Anything before the first `diff --git` (committe's commit message) is
     ignored, exactly as `git apply` ignores it.  A hunk is its old-file
     start line and a list of (tag, line) pairs, the line keeping its
     trailing newline and the tag being ' ', '-' or '+'.
@@ -230,7 +230,7 @@ def main():
     parser = argparse.ArgumentParser(
         prog="fuzzy-apply",
         description="Apply a unified diff, matching context fuzzily.")
-    parser.add_argument("patch", nargs="?", default=".git/.geni-patchfile",
+    parser.add_argument("patch", nargs="?", default=".git/committe-patchfile",
                         help="the patch to apply (default: %(default)s)")
     parser.add_argument("-t", "--threshold", type=float, default=0.8, metavar="R",
                         help="minimum difflib ratio for a fuzzy match"
