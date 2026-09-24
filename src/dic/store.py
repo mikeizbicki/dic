@@ -32,6 +32,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
     mid TEXT PRIMARY KEY,
     round INTEGER,               -- which API call of this user turn the row is
+    round INTEGER,               -- which API call of this user turn the row is
     user TEXT,
     system TEXT,
     response TEXT,
