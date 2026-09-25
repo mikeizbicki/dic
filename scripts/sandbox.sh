@@ -59,7 +59,7 @@ flags:
                      O(1) in the size of PATH, unlike --rw.
   --cwd DIR          working directory inside the sandbox.
                      Default: $PWD.
-  --net=MODE         network policy: none (default) | live | host.
+  --net=MODE         network policy: none (default) | host.
   --env K=V          set K=V in the sandbox environment.
   --pass-env K       forward K from the host environment (repeatable).
   -h, --help         show this help.
@@ -88,7 +88,8 @@ if (( ${#cmd[@]} == 0 )); then
 fi
 
 case "$net_mode" in
-    none|live|host) ;;
+    none|host) ;;
+    live) echo "sandbox-error: --net=live is not implemented" >&2; exit 2 ;;
     *) echo "sandbox-error: unknown --net mode: $net_mode" >&2; exit 2 ;;
 esac
 
@@ -140,13 +141,21 @@ cwd=${cwd:-$PWD}
 # build the inner script
 # ----------------------------------------------------------------------------
 
+emit_array() {
+    local name="$1"; shift
+    printf '%s=(' "$name"
+    if (( $# )); then printf '%q ' "$@"; fi
+    printf ')\n'
+}
+
 inner=$(
+    printf 'set -euo pipefail\n'
     printf 'STAGE=%q\n' "$STAGE"
     printf 'CWD=%q\n'   "$cwd"
-    printf 'RW_DIRS=(';  printf '%q ' "${rw_dirs[@]}";  printf ')\n'
-    printf 'RO_DIRS=(';  printf '%q ' "${ro_dirs[@]}";  printf ')\n'
-    printf 'OVERLAY_DIRS=('; printf '%q ' "${overlay_dirs[@]}"; printf ')\n'
-    printf 'ENV_ARGS=('; printf '%q ' "${env_args[@]}"; printf ')\n'
+    emit_array RW_DIRS "${rw_dirs[@]}"
+    emit_array RO_DIRS "${ro_dirs[@]}"
+    emit_array OVERLAY_DIRS "${overlay_dirs[@]}"
+    emit_array ENV_ARGS "${env_args[@]}"
     cat <<'INNER_SCRIPT'
 # ---- fresh root ------------------------------------------------------------
 
@@ -160,7 +169,7 @@ mount --make-rslave "$STAGE/root"
 
 # Pre-create every mountpoint while the tree is still writable.
 mkdir -p "$STAGE/root/tmp" "$STAGE/root/var/tmp" "$STAGE/root/run"
-mkdir -p "$STAGE/root/proc" "$STAGE/root/dev" "$STAGE/root/.oldroot"
+mkdir -p "$STAGE/root/proc" "$STAGE/root/dev"
 
 sandbox-dst() {
     local spec="$1" dst
@@ -183,7 +192,7 @@ if command -v findmnt >/dev/null 2>&1; then
         if [[ "$mnt" == / ]]; then
             continue
         fi
-        mount -o remount,bind,ro "$STAGE/root$mnt" 2>/dev/null || true
+        mount -o remount,bind,ro "$STAGE/root$mnt"
     done < <(findmnt -R -n -o TARGET --target /)
 fi
 
@@ -192,6 +201,12 @@ fi
 mount -t tmpfs -o mode=1777 sandbox-tmp    "$STAGE/root/tmp"
 mount -t tmpfs -o mode=1777 sandbox-vartmp "$STAGE/root/var/tmp"
 mount -t tmpfs -o mode=0755 sandbox-run    "$STAGE/root/run"
+
+# pivot_root needs a put_old directory under the new root, and it must be
+# one the sandbox may create.  The host's / is not ours -- its inode is
+# owned by the unmapped uid 0 -- so .oldroot goes on the fresh /tmp tmpfs.
+
+mkdir -p "$STAGE/root/tmp/.oldroot"
 
 # ---- fresh /dev ------------------------------------------------------------
 
@@ -264,10 +279,10 @@ done
 
 # ---- pivot into the new root -----------------------------------------------
 
-cd "$STAGE/root"
+pivot_root . tmp/.oldroot
 pivot_root . .oldroot
-cd /
-umount -l /.oldroot 2>/dev/null || true
+umount -l /tmp/.oldroot 2>/dev/null || true
+rmdir /tmp/.oldroot 2>/dev/null || true
 rmdir /.oldroot 2>/dev/null || true
 
 # ---- environment and exec --------------------------------------------------
