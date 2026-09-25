@@ -189,11 +189,11 @@ mount --make-rslave "$STAGE/root"
 
 if command -v findmnt >/dev/null 2>&1; then
     while IFS= read -r mnt; do
-        if [[ "$mnt" == / ]]; then
-            continue
-        fi
+        [[ "$mnt" == / ]] && continue
+        # Skip the staging tree; those mounts are ours, not the host's.
+        [[ "$mnt" == "$STAGE" || "$mnt" == "$STAGE"/* ]] && continue
         mount -o remount,bind,ro "$STAGE/root$mnt"
-    done < <(findmnt -R -n -o TARGET --target /)
+    done < <(findmnt -R -n -l -o TARGET --target /)
 fi
 
 # ---- fresh tmpfs over the shared user-space paths --------------------------
@@ -278,6 +278,11 @@ for spec in "${OVERLAY_DIRS[@]}"; do
 done
 
 # ---- pivot into the new root -----------------------------------------------
+
+# util-linux helpers (pivot_root, mount, findmnt) live in sbin, which
+# is not on a regular user's PATH.  The command we exec gets its own
+# PATH via env -i below, so widening it here is harmless.
+PATH="$PATH:/usr/sbin:/sbin"
 
 pivot_root . tmp/.oldroot
 pivot_root . .oldroot
