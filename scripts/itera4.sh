@@ -41,29 +41,18 @@ EOF
 function itera() {
     local test_cmd="${ITERA_TEST:-./test.sh}"
     local max="${ITERA_MAX:-8}"
-    local -a request=()
 
-    while (( $# )); do
-        case "$1" in
-            -h|--help) itera-usage; return 0 ;;
-            --test)    test_cmd="$2"; shift 2 ;;
-            --max)     max="$2"; shift 2 ;;
-            --)        shift; request=("$@"); break ;;
-            *)         request=("$@"); break ;;
-        esac
-    done
-
-    if [[ ! -f "$ITERA_COMMITTE_SH" ]]; then
-        echo 'itera-error: committe.sh not found beside itera4.sh' >&2
+    # check that dependencies exist
+    if ! command -v committe >/dev/null 2>&1; then
+        echo 'itera-error: committe not found' >&2
         return 1
     fi
     if ! command -v sandbox >/dev/null 2>&1; then
         echo 'itera-error: sandbox not found' >&2
         return 1
     fi
-    # committe checks that we are in a git repository with a clean tree,
-    # so there is nothing to check here.
 
+    # ralph loop
     local i=0 prev= prior= out tree
     while (( i < max )); do
         i=$((i + 1))
@@ -78,15 +67,6 @@ function itera() {
             return 0
         fi
 
-        # A round that changed nothing is a round that will repeat itself
-        # forever.  Report it and stop rather than burn the budget.
-        tree=$(git rev-parse 'HEAD^{tree}')
-        if [[ "$tree" == "$prev" ]]; then
-            printf 'itera: the tree did not change; stopping\n' >&2
-            return 2
-        fi
-        prev="$tree"
-
         if {
             printf '%s' "$prior"
             printf 'The tests fail with:\n\n%s\n\n' "$out"
@@ -94,7 +74,7 @@ function itera() {
             git --no-pager log -1 -p
             printf '\nThe tree is:\n\n'
             files-to-prompt .
-        } | committe "${request[@]}" >&2; then
+        } | committe "$@" >&2; then
             prior=
         else
             printf 'itera: the patch did not apply\n' >&2
