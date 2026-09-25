@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# sandbox2.sh -- run a command in a namespaced, read-only jail.
+# sandbox.sh -- run a command in a namespaced, read-only jail.
 #
 # The environment is:
 #

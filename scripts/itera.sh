@@ -61,11 +61,16 @@ function itera() {
         echo 'itera-error: sandbox not found' >&2
         return 1
     fi
+    if ! command -v "$test_cmd" >/dev/null 2>&1; then
+        echo "itera-error: test_cmd='$test_cmd' not found" >&2
+        return 1
+    fi
 
     # The tree must already be green.  Otherwise the loop would be fixing
     # pre-existing failures, and a green tree would otherwise end the loop
     # before it had made the change being asked for.
-    if ! sandbox --ro "$PWD:/w" --cwd /w -- bash -c "$test_cmd" >/dev/null 2>&1; then
+    if ! local pre=$(sandbox -- $test_cmd 2>&1); then
+        printf '%s\n' "$pre" >&2
         echo 'itera-error: tests do not pass before starting' >&2
         return 1
     fi
@@ -95,7 +100,7 @@ function itera() {
 
         # The tests run after committe, so a round that changes nothing and
         # a round that fixes the failure are told apart by the run after it.
-        if out=$(sandbox --ro "$PWD:/w" --cwd /w -- bash -c "$test_cmd" 2>&1); then
+        if out=$(sandbox -- $test_cmd 2>&1); then
             printf 'itera: green after %d round(s)\n' "$i" >&2
             return 0
         fi
