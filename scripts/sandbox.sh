@@ -228,7 +228,7 @@ for spec in "${RW_DIRS[@]}"; do
     dst=$(sandbox-dst "$spec")
     src=$(realpath -- "$src")
     mount -t tmpfs sandbox-rw "$STAGE/root$dst"
-    cp -a --reflink=auto -- "$src/." "$STAGE/root$dst/"
+    cp -a --no-preserve=ownership --reflink=auto -- "$src/." "$STAGE/root$dst/"
 done
 
 # ---- user writable overlays ------------------------------------------------
