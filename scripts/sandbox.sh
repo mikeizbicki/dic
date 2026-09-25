@@ -1,10 +1,6 @@
 #!/bin/bash
 #
-# sandbox.sh -- run a command in a namespaced, read-only jail.
-#
-# The command is never inspected.  A tool named `unsafe-*` runs exactly
-# like any other tool; safety is a property of the environment, not of
-# argv.
+# sandbox2.sh -- run a command in a namespaced, read-only jail.
 #
 # The environment is:
 #
@@ -18,10 +14,9 @@
 #     mounts are stacked over /tmp, /var/tmp, /run, /dev, and
 #     /dev/shm.  Writable state lives only in the private mount
 #     namespace and is destroyed with it.  A host path is never
-#     bind-mounted read-write; --rw copies the tree into a tmpfs.
+#     bind-mounted read-write.
 #
-#   * A fresh /proc and a minimal /dev, built from bind mounts of the
-#     host's character devices.
+#   * A fresh /proc and a minimal /dev.
 #
 # Every relaxation of the default policy prints a banner to stderr
 # naming the wall that came down.
@@ -43,20 +38,19 @@ cwd=
 
 sandbox-usage() {
     cat <<'EOF'
-usage: sandbox [flags] [--] CMD [args...]
+usage: sandbox2 [flags] [--] CMD [args...]
 
 Run CMD inside a namespaced, read-only jail.  If CMD is omitted, $SHELL
 is used.
 
 flags:
-  --rw PATH[:DST]    writable copy of PATH, mounted at DST
-                     (default DST = PATH).  Never a bind mount; the
-                     tree is copied into a fresh tmpfs.
+  --rw PATH[:DST]    writable view of PATH, mounted at DST
+                     (default DST = PATH).  Never a bind mount; writes
+                     go to a tmpfs upper layer that dies with the
+                     sandbox.
   --ro PATH[:DST]    additional read-only bind of PATH at DST.
   --overlay PATH[:DST]
-                     PATH is a read-only lower layer; every write lands
-                     in a tmpfs upper layer that dies with the sandbox.
-                     O(1) in the size of PATH, unlike --rw.
+                     alias for --rw.
   --cwd DIR          working directory inside the sandbox.
                      Default: $PWD.
   --net=MODE         network policy: none (default) | host.
@@ -93,8 +87,8 @@ case "$net_mode" in
     *) echo "sandbox-error: unknown --net mode: $net_mode" >&2; exit 2 ;;
 esac
 
-if ! command -v unshare >/dev/null 2>&1; then
-    echo "sandbox-error: unshare(1) not found" >&2
+if ! command -v bwrap >/dev/null 2>&1; then
+    echo "sandbox-error: bubblewrap(1) not found" >&2
     exit 1
 fi
 
@@ -105,14 +99,11 @@ fi
 if [[ "$net_mode" != none ]]; then
     echo "sandbox: network=$net_mode" >&2
 fi
-for spec in "${rw_dirs[@]}"; do
-    echo "sandbox: writable copy of $spec" >&2
+for spec in "${rw_dirs[@]}" "${overlay_dirs[@]}"; do
+    echo "sandbox: writable view of $spec (upper layer is tmpfs)" >&2
 done
 for spec in "${ro_dirs[@]}"; do
     echo "sandbox: extra read-only bind of $spec" >&2
-done
-for spec in "${overlay_dirs[@]}"; do
-    echo "sandbox: writable overlay of $spec (upper layer is tmpfs)" >&2
 done
 
 # ----------------------------------------------------------------------------
@@ -129,47 +120,7 @@ for kv in "${extra_env[@]}"; do
     env_args+=("$kv")
 done
 
-# ----------------------------------------------------------------------------
-# staging directory
-# ----------------------------------------------------------------------------
-
-STAGE=$(mktemp -d "${TMPDIR:-/tmp}/sandbox.XXXXXXXXXX")
-trap 'rm -rf -- "$STAGE"' EXIT
 cwd=${cwd:-$PWD}
-
-# ----------------------------------------------------------------------------
-# build the inner script
-# ----------------------------------------------------------------------------
-
-emit_array() {
-    local name="$1"; shift
-    printf '%s=(' "$name"
-    if (( $# )); then printf '%q ' "$@"; fi
-    printf ')\n'
-}
-
-inner=$(
-    printf 'set -euo pipefail\n'
-    printf 'STAGE=%q\n' "$STAGE"
-    printf 'CWD=%q\n'   "$cwd"
-    emit_array RW_DIRS "${rw_dirs[@]}"
-    emit_array RO_DIRS "${ro_dirs[@]}"
-    emit_array OVERLAY_DIRS "${overlay_dirs[@]}"
-    emit_array ENV_ARGS "${env_args[@]}"
-    cat <<'INNER_SCRIPT'
-# ---- fresh root ------------------------------------------------------------
-
-mkdir -p "$STAGE/root"
-mount -t tmpfs -o mode=0755 sandbox-root "$STAGE/root"
-
-# ---- host filesystem, read-only --------------------------------------------
-
-mount --rbind / "$STAGE/root"
-mount --make-rslave "$STAGE/root"
-
-# Pre-create every mountpoint while the tree is still writable.
-mkdir -p "$STAGE/root/tmp" "$STAGE/root/var/tmp" "$STAGE/root/run"
-mkdir -p "$STAGE/root/proc" "$STAGE/root/dev"
 
 sandbox-dst() {
     local spec="$1" dst
@@ -179,132 +130,55 @@ sandbox-dst() {
     printf '%s' "$dst"
 }
 
-for spec in "${RO_DIRS[@]}" "${RW_DIRS[@]}" "${OVERLAY_DIRS[@]}"; do
-    mkdir -p "$STAGE/root$(sandbox-dst "$spec")"
-done
+# ----------------------------------------------------------------------------
+# the jail
+# ----------------------------------------------------------------------------
+#
+# bwrap applies options left to right, so the ordering below is the
+# policy: the host first, read-only; then the fresh writable stacks
+# that shadow its shared paths; then the caller's own escapes.
 
-# Remount the top of the tree read-only, and every submount with it.
-mount -o remount,bind,ro "$STAGE/root"
-mount --make-rslave "$STAGE/root"
-
-if command -v findmnt >/dev/null 2>&1; then
-    while IFS= read -r mnt; do
-        [[ "$mnt" == / ]] && continue
-        # Skip the staging tree; those mounts are ours, not the host's.
-        [[ "$mnt" == "$STAGE" || "$mnt" == "$STAGE"/* ]] && continue
-        mount -o remount,bind,ro "$STAGE/root$mnt"
-    done < <(findmnt -R -n -l -o TARGET --target /)
+declare -a bargs=(
+    --die-with-parent
+    --new-session
+    --unshare-user
+    --unshare-ipc
+    --unshare-pid
+    --unshare-uts
+    --unshare-cgroup
+)
+if [[ "$net_mode" == none ]]; then
+    bargs+=(--unshare-net)
+else
+    bargs+=(--share-net)
 fi
 
-# ---- fresh tmpfs over the shared user-space paths --------------------------
-
-mount -t tmpfs -o mode=1777 sandbox-tmp    "$STAGE/root/tmp"
-mount -t tmpfs -o mode=1777 sandbox-vartmp "$STAGE/root/var/tmp"
-mount -t tmpfs -o mode=0755 sandbox-run    "$STAGE/root/run"
-
-# pivot_root needs a put_old directory under the new root, and it must be
-# one the sandbox may create.  The host's / is not ours -- its inode is
-# owned by the unmapped uid 0 -- so .oldroot goes on the fresh /tmp tmpfs.
-
-mkdir -p "$STAGE/root/tmp/.oldroot"
-
-# ---- fresh /dev ------------------------------------------------------------
-
-mount -t tmpfs -o mode=0755 sandbox-dev "$STAGE/root/dev"
-mkdir -p "$STAGE/root/dev/pts" "$STAGE/root/dev/shm"
-chmod 1777 "$STAGE/root/dev/shm"
-mount -t devpts -o newinstance,ptmxmode=0666,mode=0620 devpts "$STAGE/root/dev/pts"
-ln -sf pts/ptmx "$STAGE/root/dev/ptmx"
-for n in null zero full random urandom tty; do
-    if [[ -e "/dev/$n" ]]; then
-        touch "$STAGE/root/dev/$n"
-        mount --bind "/dev/$n" "$STAGE/root/dev/$n"
-    fi
-done
-
-# ---- fresh /proc -----------------------------------------------------------
-
-mount -t proc -o nosuid,nodev,noexec proc "$STAGE/root/proc"
-
-# ---- user read-only binds --------------------------------------------------
-
-for spec in "${RO_DIRS[@]}"; do
-    src="${spec%%:*}"
-    dst=$(sandbox-dst "$spec")
-    src=$(realpath -- "$src")
-    mount --bind "$src" "$STAGE/root$dst"
-    mount -o remount,bind,ro "$STAGE/root$dst"
-done
-
-# ---- user read-write copies (never a bind mount) ---------------------------
-
-for spec in "${RW_DIRS[@]}"; do
-    src="${spec%%:*}"
-    dst=$(sandbox-dst "$spec")
-    src=$(realpath -- "$src")
-    mount -t tmpfs sandbox-rw "$STAGE/root$dst"
-    cp -a --no-preserve=ownership --reflink=auto -- "$src/." "$STAGE/root$dst/"
-done
-
-# ---- user writable overlays ------------------------------------------------
-#
-# PATH is the lower layer and is never written; every write lands in a
-# tmpfs upper layer inside the namespace and is destroyed with it.  This
-# is the cheap answer for a tree too large to copy: the mount costs the
-# same whether the lower layer holds one file or a million.
-#
-# Overlayfs in a user namespace cannot use the trusted. xattr namespace,
-# so it must be told to use user. instead; that is what userxattr means.
-# The upper and work layers live on the fresh /var/tmp tmpfs because they
-# must share a filesystem, and because a workdir that outlived the
-# sandbox would be garbage nobody collected.
-
-_n=0
-for spec in "${OVERLAY_DIRS[@]}"; do
-    src="${spec%%:*}"
-    dst=$(sandbox-dst "$spec")
-    src=$(realpath -- "$src")
-    _n=$((_n + 1))
-    upper="$STAGE/root/var/tmp/sandbox-upper-$_n"
-    work="$STAGE/root/var/tmp/sandbox-work-$_n"
-    mkdir -p "$upper" "$work"
-    if ! mount -t overlay overlay \
-        -o "lowerdir=$src,upperdir=$upper,workdir=$work,userxattr" \
-        "$STAGE/root$dst"; then
-        echo "sandbox-error: overlay of $spec failed" >&2
-        echo "sandbox-hint: overlayfs in a user namespace needs kernel >= 5.11" >&2
-        exit 1
-    fi
-done
-
-# ---- pivot into the new root -----------------------------------------------
-
-# util-linux helpers (pivot_root, mount, findmnt) live in sbin, which
-# is not on a regular user's PATH.  The command we exec gets its own
-# PATH via env -i below, so widening it here is harmless.
-PATH="$PATH:/usr/sbin:/sbin"
-
-pivot_root . tmp/.oldroot
-pivot_root . .oldroot
-umount -l /tmp/.oldroot 2>/dev/null || true
-rmdir /tmp/.oldroot 2>/dev/null || true
-rmdir /.oldroot 2>/dev/null || true
-
-# ---- environment and exec --------------------------------------------------
-
-mkdir -p /tmp/sandbox-home
-cd "$CWD"
-exec env -i HOME=/tmp/sandbox-home "${ENV_ARGS[@]}" "$@"
-INNER_SCRIPT
+bargs+=(
+    --ro-bind / /
+    --proc /proc
+    --dev /dev
+    --tmpfs /dev/shm
+    --tmpfs /tmp
+    --tmpfs /var/tmp
+    --tmpfs /run
 )
 
-# ----------------------------------------------------------------------------
-# namespaces and run
-# ----------------------------------------------------------------------------
+for spec in "${ro_dirs[@]}"; do
+    src=$(realpath -- "${spec%%:*}")
+    bargs+=(--ro-bind "$src" "$(sandbox-dst "$spec")")
+done
 
-declare -a ns_opts=(--user --map-root-user --mount --uts --ipc --pid --fork --cgroup)
-if [[ "$net_mode" == none ]]; then
-    ns_opts+=(--net)
-fi
+for spec in "${rw_dirs[@]}" "${overlay_dirs[@]}"; do
+    src=$(realpath -- "${spec%%:*}")
+    bargs+=(--overlay "$src" "$(sandbox-dst "$spec")")
+done
 
-unshare "${ns_opts[@]}" bash -c "$inner" sandbox "${cmd[@]}"
+bargs+=(--clearenv --setenv HOME /tmp)
+for kv in "${env_args[@]}"; do
+    bargs+=(--setenv "${kv%%=*}" "${kv#*=}")
+done
+
+bargs+=(--chdir "$cwd" --)
+bargs+=("${cmd[@]}")
+
+exec bwrap "${bargs[@]}"
