@@ -39,17 +39,23 @@ def build(model, turns, system, params):
     """The request fields: the model, its prompt, its options, its images.
 
     size and quality and anything else the API knows are the config's
-    options and -o; dic forwards them rather than validating them, so a new
-    parameter works before it is written down.  The reference images travel
-    under a private key because they are bytes and not JSON, and call() is
-    what turns them into the multipart parts /images/edits wants.
+    options and -o, merged last so that -o wins over the defaults dic sets,
+    as it does in every other adaptor: dic forwards them rather than
+    validating them, so a new parameter works before it is written down.
+    The reference images travel under a private key because they are bytes
+    and not JSON, and call() is what turns them into the multipart parts
+    /images/edits wants.
+
+    >>> build({"model_name": "m"}, [], None, {"n": 4})["n"]
+    4
     """
     prompt, files = newest(turns)
-    body = dict(params, model=model["model_name"], n=1)
+    body = {"model": model["model_name"], "n": 1}
     if prompt:
         body["prompt"] = prompt
     if files:
         body["_files"] = files
+    body.update(params)         # -o is last, as in every other adaptor
     return body
 
 

@@ -108,6 +108,10 @@ def parse(event, acc):
     ('', '')
     >>> acc["usage"]
     {'in': 3, 'out': 1}
+    >>> parse({"choices": [], "service_tier": "flex"}, acc)
+    ('', '')
+    >>> acc["tier"]
+    'flex'
     """
     if event.get("error"):
         # a failure reported as a data frame rather than as a status code
@@ -115,6 +119,10 @@ def parse(event, acc):
         acc["error"] = (f"{error.get('type') or 'error'}: {error.get('message')}"
                         if isinstance(error, dict) else str(error))
         return "", ""
+    if event.get("service_tier"):
+        # the tier is a fact about the response, so a price is read from here
+        # and never from the request options that were sent
+        acc["tier"] = event["service_tier"]
     usage = event.get("usage")
     if usage:
         acc["usage"] = openai_usage(usage)

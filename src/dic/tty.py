@@ -299,6 +299,8 @@ def summary(usage, items, mid, stamps, verbosity):
     'cost: $0.0105 (input: $0.0030, output: $0.0075) --mid=01ABC'
     >>> summary({}, [], None, stamps, 1)
     'cost: $0.0000 (input: $0.0000, output: $0.0000)'
+    >>> summary({"in": 100, "in.cache_read": 900}, items, None, stamps, 1)
+    'cost: $0.0105 (input: $0.0030, output: $0.0075) cache-read 90%'
     >>> summary({"out": 800}, [], "01ABC", stamps, 2).split(" | ")[1]
     'overhead 10ms, ttft 200ms, 1000 tok/s, total 1100ms'
     >>> summary({"in": 1000, "out": 500}, items, None, stamps, 2).split(" | ")[0]
@@ -311,6 +313,11 @@ def summary(usage, items, mid, stamps, verbosity):
              if verbosity >= 2 and items
              else f"input: ${cost_of('in'):.4f}, output: ${cost_of('out'):.4f}")
     line = f"cost: ${sum(i['cost'] for i in items):.4f} ({money})"
+    read = usage.get("in.cache_read") or 0
+    if read:
+        # a hit is the reason to cache at all, so it is on the line everyone
+        # sees and not behind a -v: the read share of this call's input
+        line += f" cache-read {100 * read / (read + (usage.get('in') or 0)):.0f}%"
     if mid:                     # a cancelled call has no row, and so no mid
         line += f" --mid={mid}"
     if verbosity < 2:

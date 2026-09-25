@@ -26,7 +26,7 @@ from dic.tty import DicError
 # version of dic migrates another one: dic is pre-release, so an older file is
 # not upgraded but reported with the rm that removes it, because a database
 # that is only nearly right fails later as a confusing sqlite error.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -64,7 +64,11 @@ CREATE TABLE IF NOT EXISTS messages (
     tokens_output INTEGER GENERATED ALWAYS AS
         (json_extract(usage, '$."out"')) VIRTUAL,
     tokens_reasoning INTEGER GENERATED ALWAYS AS
-        (json_extract(usage, '$."out.reasoning"')) VIRTUAL);
+        (json_extract(usage, '$."out.reasoning"')) VIRTUAL,
+    -- the hit count, beside the three: a cache read is the one derived
+    -- number a caller asks for by name, and it is not part of `in`
+    tokens_cache_read INTEGER GENERATED ALWAYS AS
+        (json_extract(usage, '$."in.cache_read"')) VIRTUAL);
 CREATE INDEX IF NOT EXISTS messages_prev_mid ON messages(prev_mid);
 -- Every derived number is a subtraction of two stored instants, so the view
 -- is a view: nothing is materialized, nothing can go stale, and no python
@@ -82,7 +86,7 @@ CREATE VIEW IF NOT EXISTS stats AS SELECT
     (t_last    - t_first)  / 1e6 AS ms_stream,
     (t_done    - t_last)   / 1e6 AS ms_teardown,
     (t_done    - t_start)  / 1e6 AS ms_total,
-    tokens_input, tokens_output, tokens_reasoning,
+    tokens_input, tokens_output, tokens_reasoning, tokens_cache_read,
     1e9 * (tokens_output + coalesce(tokens_reasoning, 0))
         / nullif(t_last - t_first, 0) AS tok_per_sec
   FROM messages;
@@ -135,6 +139,10 @@ SELECT model_id, count(*) AS n, sum(status <> 200) AS errors,
        sum(tokens_input) AS tin, sum(tokens_output) AS tout
        , round(sum(cost), 4) AS cost
        , count(DISTINCT price_hash) AS price_versions
+       , sum(tokens_cache_read) AS tcache
+       , round(100.0 * sum(tokens_cache_read)
+               / nullif(sum(tokens_input) + sum(tokens_cache_read), 0), 1)
+         AS cache_hit_pct
   FROM stats GROUP BY model_id ORDER BY n DESC
 """
 

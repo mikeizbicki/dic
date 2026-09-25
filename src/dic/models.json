@@ -3,6 +3,8 @@
 
   "#ids": "An id is a '+'-separated chain, weakest first: 'groq+qwen' is the entry 'qwen' layered on the entry 'groq'.  Entries with \"abstract\": true are providers or mixins; they cannot be used with -m, only inherited from.  Chains nobody wrote down work too: 'thinking-high+anthropic+sonnet'.",
 
+  "#cache": "A cache is a purchase, so it is off unless a model prices it: dic sends a cache_control block only when --cache names a TTL that the model's own price table rates.  Every anthropic+* entry therefore states in.cache_read, in.cache_write.5m and in.cache_write.1h at the published multipliers -- 0.1x the input rate to read, 1.25x for a five minute write and 2x for an hour -- and every other provider states none, so openrouter+* can never be billed for a cache dic cannot rate.",
+
   "groq": {
     "abstract": true,
     "api_base": "https://api.groq.com/openai/v1",
@@ -50,10 +52,22 @@
     "model_name": "qwen-3.8-27b"
   },
 
-  "anthropic+fable":  {"model_name": "claude-fable-5-1",  "cost_input": 10.0,  "cost_output": 50.0},
-  "anthropic+opus":   {"model_name": "claude-opus-5",     "cost_input":  5.0,  "cost_output": 25.0},
-  "anthropic+sonnet": {"model_name": "claude-sonnet-5",   "cost_input":  2.0,  "cost_output": 10.0},
-  "anthropic+haiku":  {"model_name": "claude-haiku-4-5",  "cost_input":  1.0,  "cost_output":  5.0},
+  "anthropic+fable":  {"model_name": "claude-fable-5-1",  "cost_input": 10.0,  "cost_output": 50.0,
+                       "price": {"in.cache_read":     {"rate":  1.00},
+                                 "in.cache_write.5m": {"rate": 12.50},
+                                 "in.cache_write.1h": {"rate": 20.00}}},
+  "anthropic+opus":   {"model_name": "claude-opus-5",     "cost_input":  5.0,  "cost_output": 25.0,
+                       "price": {"in.cache_read":     {"rate":  0.50},
+                                 "in.cache_write.5m": {"rate":  6.25},
+                                 "in.cache_write.1h": {"rate": 10.00}}},
+  "anthropic+sonnet": {"model_name": "claude-sonnet-5",   "cost_input":  2.0,  "cost_output": 10.0,
+                       "price": {"in.cache_read":     {"rate":  0.20},
+                                 "in.cache_write.5m": {"rate":  2.50},
+                                 "in.cache_write.1h": {"rate":  4.00}}},
+  "anthropic+haiku":  {"model_name": "claude-haiku-4-5",  "cost_input":  1.0,  "cost_output":  5.0,
+                       "price": {"in.cache_read":     {"rate":  0.10},
+                                 "in.cache_write.5m": {"rate":  1.25},
+                                 "in.cache_write.1h": {"rate":  2.00}}},
 
   "openai+astra":     {"model_name": "gpt-6-astra",       "cost_input": 10.00, "cost_output": 50.00 },
   "openai+sol":       {"model_name": "gpt-5.6-sol",       "cost_input":  4.00, "cost_output": 20.00 },

@@ -78,6 +78,12 @@ def parse(event, acc):
     ('', '')
     >>> acc["usage"], acc["raw"]
     ({'in': 2, 'out': 1}, [{'type': 'message'}])
+    >>> parse({"type": "response.completed",
+    ...        "response": {"output": [], "service_tier": "flex",
+    ...                     "usage": {"input_tokens": 1}}}, acc)
+    ('', '')
+    >>> acc["tier"]
+    'flex'
     """
     kind = event.get("type")
     if kind in ("response.reasoning_summary_text.delta",
@@ -95,6 +101,10 @@ def parse(event, acc):
         resp = event.get("response") or {}
         acc["raw"] = resp.get("output") or []
         acc["usage"] = openai_usage(resp.get("usage") or {})
+        if resp.get("service_tier"):
+            # what the response charged, so that a price is never read from
+            # the request options that were sent
+            acc["tier"] = resp["service_tier"]
         if kind == "response.incomplete":
             acc["stop"] = (resp.get("incomplete_details") or {}).get("reason")
     return "", ""

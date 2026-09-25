@@ -52,6 +52,7 @@ Whenever possible, names and semantics remain the same as simonw's `llm`.
 |            | `--path`       | write the answer to this file, atomically |
 | `-f`       | `--force`      | overwrite the file named by `--path` |
 |            | `--mime-type`  | the mime type of the answer |
+|            | `--cache`      | cache the prompt: `off` (the default), or a TTL the model prices |
 | `-c`       | `--continue`   | continue the previous conversation in this session |
 |            | `--mid`        | continue the conversation from the given message id |
 |            | `--pv-thinking` | show the reasoning stream as a one-line `pv`-style meter (the default) |
@@ -521,6 +522,12 @@ so these can be used before `dic` knows anything about them.
 `dic` must not validate them: unknown keys are forwarded to the API and the API is allowed to reject them.
 Client-side validation is what makes tools obsolete on release day.
 
+`-o` is transparent and dic never reads it back: what a model was *asked*
+for is the provider's business and what it *charged* is in the response,
+which is where a price is read from.  The two keys dic owns instead of
+forwarding are `tools`, which `--tools` writes, and the cache breakpoint
+`--cache` builds (see "Prompt caching").
+
 ### Prices
 
 How much a call cost is a function of two things, and `dic` keeps them apart:
@@ -561,6 +568,32 @@ adapters escape hatch and no more.
 
 The most specific matching rule wins.  Two rules that match equally well at two
 different rates are an error, because a silently picked price is a wrong invoice.
+
+### Prompt caching
+
+Caching is a purchase, so it is off unless it can be priced.  A call carries a
+provider cache breakpoint only when `--cache=TTL` names a TTL the model's own
+price table rates -- `in.cache_write.5m`, `in.cache_write.1h` -- and `off` is
+the default for every model and the only value for a model that rates none.
+Turning caching off is therefore not a switch but the absence of a cache rule,
+which is why `openrouter+*` and every other provider whose cache behavior dic
+cannot rate are never sent a `cache_control` block at all.
+
+`--cache=off|5m|1h`, or `$DIC_CACHE`, chooses per call.  A TTL the model does
+not price is an error naming the ones it does, never a silent miss: a cache the
+user believes is warm is worse than no cache.
+
+The TTL is a property of the *write*, not of the read, so a read is priced by
+`in.cache_read` however the entry was written.  Where a provider reports the
+write side split by TTL, each TTL is a usage name of its own and is billed at
+its own rate; where it reports one total, that total is billed at the TTL the
+call asked for, because that is the TTL the provider charged.
+
+`dic` marks the system prompt and the last turn of the conversation, the two
+prefixes a continuing call reuses, and copies what it marks: what is stored in
+`response_raw` is what the provider sent, and a breakpoint belongs to one
+request and never to the record.  A provider's opaque reasoning block takes no
+breakpoint, so one is placed on the last block that does.
 
 ### The config cache
 

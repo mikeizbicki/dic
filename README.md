@@ -5,6 +5,9 @@
 `dic` is a minimalist CLI tool for working with chat LLMs models.
 It is designed to be a "thin wrapper" around API endpoints.
 
+The normative specification is [src/dic/SPEC.md](src/dic/SPEC.md); this file
+is the tour, and where the two disagree the spec wins.
+
 `dic` is similar to simonw's `llm` tool but with an emphasis on speed and Unix-style composability.
 
 > **Etymology:**

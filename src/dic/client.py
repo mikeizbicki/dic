@@ -173,6 +173,63 @@ def options(model, overrides):
     return opts
 
 
+# The usage name a cache write is rated under.  A model advertises exactly
+# the TTLs it has a rule for here, so the set of TTLs a user may name is the
+# set of cache writes dic can pay for and nothing else.
+CACHE_WRITE = "in.cache_write."
+
+
+def cache_ttls(model):
+    """The cache TTLs a model's price table can rate, shortest first.
+
+    A model advertises the caching it can pay for and nothing else, so these
+    are the values --cache may take beyond `off`; a provider whose cache
+    price nobody wrote down advertises none and is never sent a breakpoint.
+
+    >>> cache_ttls({"price": {"in.cache_write.5m": {"rate": 12.5},
+    ...                       "in.cache_write.1h": {"rate": 20.0}}})
+    ['1h', '5m']
+    >>> cache_ttls({"price": {"in": {"rate": 3.0}}})
+    []
+    """
+    return sorted(name[len(CACHE_WRITE):] for name in (model.get("price") or {})
+                  if name.startswith(CACHE_WRITE))
+
+
+def cache_ttl(model, asked):
+    """The TTL this call caches under, or None: off unless asked and priced.
+
+    Off is the default, and off is all a model that prices no cache write
+    gets, so a model that cannot be billed for a cache write is never asked
+    for one.  A TTL that was asked for and cannot be rated is an error naming
+    what the model does offer, because a silent miss is a cache the user
+    believes is warm.
+
+    >>> cache_ttl({"price": {}}, None) is None
+    True
+    >>> cache_ttl({"model_id": "m", "price": {"in.cache_write.1h": {}}}, "1h")
+    '1h'
+    >>> cache_ttl({"model_id": "m", "price": {"in.cache_write.5m": {}}}, "1h")
+    Traceback (most recent call last):
+    ...
+    dic.tty.DicError: m: --cache=1h is not available (try: off, 5m)
+    >>> cache_ttl({"model_id": "m", "price": {}}, "5m")
+    Traceback (most recent call last):
+    ...
+    dic.tty.DicError: m: cannot cache: no cache price is configured, so a cache write cannot be rated
+    """
+    if asked in (None, "off"):
+        return None
+    ttls = cache_ttls(model)
+    if not ttls:
+        raise DicError(f"{model['model_id']}: cannot cache: no cache price"
+                       " is configured, so a cache write cannot be rated")
+    if asked not in ttls:
+        raise DicError(f"{model['model_id']}: --cache={asked} is not available"
+                       f" (try: off, {', '.join(ttls)})")
+    return asked
+
+
 def dic(prompt,
         model:        flag(short="-m", help="which model") = None,
         system:       flag(short="-s", help="system prompt") = None,
@@ -180,6 +237,9 @@ def dic(prompt,
                            help="attach a file") = (),
         option:       flag(short="-o", action="append", metavar="KEY=VALUE",
                            help="override a model option") = (),
+        cache:        flag(long="--cache", metavar="TTL",
+                           help="cache the prompt: off (the default), or a"
+                                " TTL the model prices") = None,
         tools:        flag(long="--tools", action="append",
                            metavar="MODULE:FUNC",
                            help="offer a python function as a tool; repeatable") = (),
@@ -333,6 +393,12 @@ def dic(prompt,
     turns = normalize(turns)
 
     opts = options(model, knobs["option"])
+    # a cache breakpoint is a request dic builds and not an option it
+    # forwards, so the TTL is settled here: off unless the caller asked for
+    # one the model's own price table can rate
+    cache = cache_ttl(model, knobs["cache"])
+    if cache:
+        model["cache"] = cache
     if tools:
         # the model is offered the tools it may call, in this wire protocol's
         # own shape; a protocol with no tools at all says so here and not at
@@ -370,21 +436,6 @@ def dic(prompt,
             pv_update(pv, final=True, err=err, env=env)
         if pv_resp is not None:
             pv_update(pv_resp, final=True, err=err, env=env)
-
-    def billing():
-        """The usage the API reported and what the price table makes of it.
-
-        One place, reached from both the reply and the cancelled path, so a
-        ^C's cost line and the reply's are the same numbers.  The itemization
-        comes back with the total because it is what gets stored: the rule
-        that priced each count is not recoverable from the config, which the
-        next invocation may already have edited.
-        """
-        usage = acc.get("usage") or {}
-        facts = price.facts(usage, acc.get("tier") or opts.get("service_tier")
-                            or "default")
-        total, items = price.rate(model, usage, facts)
-        return usage, total, items
 
     def insert(mid, response, raw, outputs, usage, cost, items, status, error):
         """Append one turn to the tree: the reply, the failure, or the abort."""
@@ -434,8 +485,10 @@ def dic(prompt,
         which the next invocation may already have edited.
         """
         usage = acc.get("usage") or {}
-        facts = price.facts(usage, acc.get("tier") or opts.get("service_tier")
-                            or "default")
+        # the tier is what the response says it charged, never what the request
+        # asked for: a provider that ignores -o service_tier must not be priced
+        # as though it had obeyed it
+        facts = price.facts(usage, acc.get("tier") or "default")
         total, items = price.rate(model, usage, facts)
         return usage, total, items
 
@@ -474,7 +527,10 @@ def dic(prompt,
     try:
         call = getattr(adaptor, "call", None)
         while True:                 # a round may end by asking for a tool
-            acc, chunks, asked, results = {}, [], (), []
+            # a cache write that arrives as one flat total is billed at the
+            # TTL this call asked for, so the adaptor is told which it was
+            acc = {"cache": model["cache"]} if model.get("cache") else {}
+            chunks, asked, results = [], (), []
             # a later round begins where the round before it stopped, so its
             # overhead is the tools that ran in between and not dic's startup
             wire = {"t_start": stamps.get("t_last") or t_start}
