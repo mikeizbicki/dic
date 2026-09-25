@@ -34,6 +34,7 @@ set -euo pipefail
 
 declare -a rw_dirs=()
 declare -a ro_dirs=()
+declare -a overlay_dirs=()
 declare -a extra_env=()
 declare -a pass_env=(PATH TERM LANG LC_ALL TZ)
 declare -a cmd=()
@@ -52,6 +53,10 @@ flags:
                      (default DST = PATH).  Never a bind mount; the
                      tree is copied into a fresh tmpfs.
   --ro PATH[:DST]    additional read-only bind of PATH at DST.
+  --overlay PATH[:DST]
+                     PATH is a read-only lower layer; every write lands
+                     in a tmpfs upper layer that dies with the sandbox.
+                     O(1) in the size of PATH, unlike --rw.
   --cwd DIR          working directory inside the sandbox.
                      Default: $PWD.
   --net=MODE         network policy: none (default) | live | host.
@@ -67,6 +72,7 @@ while (( $# )); do
         --)         shift; cmd=("$@"); break ;;
         --rw)       rw_dirs+=("$2"); shift 2 ;;
         --ro)       ro_dirs+=("$2"); shift 2 ;;
+        --overlay)  overlay_dirs+=("$2"); shift 2 ;;
         --cwd)      cwd="$2"; shift 2 ;;
         --env)      extra_env+=("$2"); shift 2 ;;
         --pass-env) pass_env+=("$2"); shift 2 ;;
@@ -104,6 +110,9 @@ done
 for spec in "${ro_dirs[@]}"; do
     echo "sandbox: extra read-only bind of $spec" >&2
 done
+for spec in "${overlay_dirs[@]}"; do
+    echo "sandbox: writable overlay of $spec (upper layer is tmpfs)" >&2
+done
 
 # ----------------------------------------------------------------------------
 # environment
@@ -136,6 +145,7 @@ inner=$(
     printf 'CWD=%q\n'   "$cwd"
     printf 'RW_DIRS=(';  printf '%q ' "${rw_dirs[@]}";  printf ')\n'
     printf 'RO_DIRS=(';  printf '%q ' "${ro_dirs[@]}";  printf ')\n'
+    printf 'OVERLAY_DIRS=('; printf '%q ' "${overlay_dirs[@]}"; printf ')\n'
     printf 'ENV_ARGS=('; printf '%q ' "${env_args[@]}"; printf ')\n'
     cat <<'INNER_SCRIPT'
 # ---- fresh root ------------------------------------------------------------
@@ -160,7 +170,7 @@ sandbox-dst() {
     printf '%s' "$dst"
 }
 
-for spec in "${RO_DIRS[@]}" "${RW_DIRS[@]}"; do
+for spec in "${RO_DIRS[@]}" "${RW_DIRS[@]}" "${OVERLAY_DIRS[@]}"; do
     mkdir -p "$STAGE/root$(sandbox-dst "$spec")"
 done
 
@@ -219,6 +229,37 @@ for spec in "${RW_DIRS[@]}"; do
     src=$(realpath -- "$src")
     mount -t tmpfs sandbox-rw "$STAGE/root$dst"
     cp -a --reflink=auto -- "$src/." "$STAGE/root$dst/"
+done
+
+# ---- user writable overlays ------------------------------------------------
+#
+# PATH is the lower layer and is never written; every write lands in a
+# tmpfs upper layer inside the namespace and is destroyed with it.  This
+# is the cheap answer for a tree too large to copy: the mount costs the
+# same whether the lower layer holds one file or a million.
+#
+# Overlayfs in a user namespace cannot use the trusted. xattr namespace,
+# so it must be told to use user. instead; that is what userxattr means.
+# The upper and work layers live on the fresh /var/tmp tmpfs because they
+# must share a filesystem, and because a workdir that outlived the
+# sandbox would be garbage nobody collected.
+
+_n=0
+for spec in "${OVERLAY_DIRS[@]}"; do
+    src="${spec%%:*}"
+    dst=$(sandbox-dst "$spec")
+    src=$(realpath -- "$src")
+    _n=$((_n + 1))
+    upper="$STAGE/root/var/tmp/sandbox-upper-$_n"
+    work="$STAGE/root/var/tmp/sandbox-work-$_n"
+    mkdir -p "$upper" "$work"
+    if ! mount -t overlay overlay \
+        -o "lowerdir=$src,upperdir=$upper,workdir=$work,userxattr" \
+        "$STAGE/root$dst"; then
+        echo "sandbox-error: overlay of $spec failed" >&2
+        echo "sandbox-hint: overlayfs in a user namespace needs kernel >= 5.11" >&2
+        exit 1
+    fi
 done
 
 # ---- pivot into the new root -----------------------------------------------
