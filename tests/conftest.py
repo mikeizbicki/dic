@@ -132,9 +132,10 @@ def events():
 def models(env, sse):
     """Write the test's models.json: `fake`, then one entry per other protocol.
 
-    Each of the others states only its api_type, so they are also the proof
-    that a model inherits its provider's api_base, key and price -- and the
-    three of them are what the protocol conformance tests parametrize over.
+    Each of the others inherits its provider's api_base and key, so they are
+    also the proof that a model inherits what it does not state; the three of
+    them are what the protocol conformance tests parametrize over, and the
+    prices are what the cache and tier tests need a model to state.
     """
     directory = config_dir(env)
     os.makedirs(directory, exist_ok=True)
@@ -142,8 +143,18 @@ def models(env, sse):
         json.dump({"fake": {"model_name": "fake-1",
                             "api_base": sse.api_base,
                             "api_key_name": "FAKE_API_KEY",
-                            "cost_input": 3.0, "cost_output": 15.0},
-                   "fake+anthropic": {"api_type": "anthropic-messages"},
+                            "cost_input": 3.0, "cost_output": 15.0,
+                            # a cheaper rate for the batch tier, so a call
+                            # the response billed at the default rate must
+                            # not be rated at this one
+                            "price": {"in.batch": {"rate": 1.5,
+                                                   "key": "in",
+                                                   "tier": "batch"}}},
+                   # 5m only: a TTL the model does not price is an error, and
+                   # in.cache_write.5m is the breakpoint 5m puts on the wire
+                   "fake+anthropic": {"api_type": "anthropic-messages",
+                                      "price": {"in.cache_write.5m":
+                                                {"rate": 2.5}}},
                    "fake+responses": {"api_type": "openai-responses"}}, f)
     env["FAKE_API_KEY"] = "test-key"
 

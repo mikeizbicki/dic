@@ -248,3 +248,77 @@ def test_a_tool_call_that_never_finished_is_stored_without_its_scratch_key(
 
     (block,) = json.loads(tree(env)[0]["response_raw"])
     assert "_json" not in block and block["input"] == {}
+
+
+def test_a_cache_the_model_prices_goes_on_the_wire_and_the_row(streams, env, sse,
+                                                                models):
+    sse.events = [
+        {"type": "message_start",
+         "message": {"usage": {"input_tokens": 1000,
+                               "cache_creation_input_tokens": 200,
+                               "output_tokens": 0}}},
+        {"type": "content_block_start",
+         "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta",
+         "delta": {"type": "text_delta", "text": "hi"}},
+        {"type": "content_block_stop"},
+        {"type": "message_delta", "usage": {"output_tokens": 500}}]
+
+    say(streams, env, "hi", model="fake+anthropic",
+        system="be brief", cache="5m")
+
+    # the breakpoint is on the system prompt and the last turn, which is what
+    # -c reuses, and it is the ephemeral 5m the price table rates
+    body = sse.received[-1].body
+    assert body["system"] == [{"type": "text", "text": "be brief",
+                               "cache_control": {"type": "ephemeral"}}]
+    assert body["messages"][-1]["content"][-1]["cache_control"] == {
+        "type": "ephemeral"}
+    # and the write side the response reported lands under the TTL's own name,
+    # so the cache write is priced by the rule that rates it
+    assert json.loads(tree(env)[0]["usage"]) == {
+        "in": 1000, "in.cache_write.5m": 200, "out": 500}
+
+
+def test_a_cache_ttl_the_model_does_not_price_fails_before_the_network(
+        streams, env, sse, models):
+    with pytest.raises(DicError, match="5m"):
+        say(streams, env, "hi", model="fake+anthropic", cache="1h")
+
+    assert sse.received == []          # before the network, not after it
+
+
+def test_a_replay_does_not_replay_a_breakpoint(streams, env, sse, models, events):
+    sse.events = events("first", "anthropic-messages")
+    first = say(streams, env, "one", model="fake+anthropic",
+                system="be brief", cache="5m")
+    sse.events = events("second", "anthropic-messages")
+    say(streams, env, "two", model="fake+anthropic",
+        system="be brief", cache="5m", mid=first.mid)
+
+    # a breakpoint belongs to one request and is copied in, so what got stored
+    # is what the provider sent -- and carries none of it
+    assert "cache_control" not in tree(env)[0]["response_raw"]
+
+    # and the second request marks the new last turn, not the first one it
+    # replayed: the history goes out as it was recorded
+    body = sse.received[-1].body
+    assert body["messages"][0]["content"] == [{"type": "text", "text": "one"}]
+    assert body["messages"][1]["content"] == [{"type": "text",
+                                               "text": "first"}]
+    assert body["messages"][-1]["content"][-1]["cache_control"] == {
+        "type": "ephemeral"}
+
+
+def test_the_response_tier_prices_the_call_not_the_request(streams, env, sse, model):
+    sse.events = [
+        {"choices": [{"delta": {"content": "hi"}}], "service_tier": "default"},
+        {"choices": [], "usage": {"prompt_tokens": 1000,
+                                  "completion_tokens": 500}}]
+
+    say(streams, env, "hi", model=model, option=["service_tier=batch"])
+
+    # the request asked for batch and the response says it charged default:
+    # the default rate is what the row was billed, because a provider that
+    # ignores -o must not be priced as though it had obeyed it
+    assert tree(env)[0]["cost"] == pytest.approx(0.0105)

@@ -179,6 +179,15 @@ def options(model, overrides):
 CACHE_WRITE = "in.cache_write."
 
 
+def ttl_seconds(ttl):
+    """A cache TTL as seconds, so that the shortest sorts first.
+
+    >>> ttl_seconds("5m"), ttl_seconds("1h")
+    (300, 3600)
+    """
+    return int(ttl[:-1]) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[ttl[-1]]
+
+
 def cache_ttls(model):
     """The cache TTLs a model's price table can rate, shortest first.
 
@@ -188,12 +197,12 @@ def cache_ttls(model):
 
     >>> cache_ttls({"price": {"in.cache_write.5m": {"rate": 12.5},
     ...                       "in.cache_write.1h": {"rate": 20.0}}})
-    ['1h', '5m']
+    ['5m', '1h']
     >>> cache_ttls({"price": {"in": {"rate": 3.0}}})
     []
     """
-    return sorted(name[len(CACHE_WRITE):] for name in (model.get("price") or {})
-                  if name.startswith(CACHE_WRITE))
+    return sorted((name[len(CACHE_WRITE):] for name in (model.get("price") or {})
+                   if name.startswith(CACHE_WRITE)), key=ttl_seconds)
 
 
 def cache_ttl(model, asked):

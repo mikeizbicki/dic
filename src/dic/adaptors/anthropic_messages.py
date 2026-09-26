@@ -115,6 +115,18 @@ def breakpoint(body, cache):
     everything above it, which is the whole of what -c and --mid reuse.  Only
     the content lists are copied: what gets stored in response_raw is what the
     provider sent, and a breakpoint belongs to one request.
+
+    >>> body = {"system": "be brief",
+    ...         "messages": [{"role": "user", "content": "one"},
+    ...                      {"role": "assistant", "content": "hi"},
+    ...                      {"role": "user", "content": "two"}]}
+    >>> breakpoint(body, {"type": "ephemeral"})
+    >>> body["system"]
+    [{'type': 'text', 'text': 'be brief', 'cache_control': {'type': 'ephemeral'}}]
+    >>> body["messages"][-1]["content"][-1]["cache_control"]
+    {'type': 'ephemeral'}
+    >>> body["messages"][0]["content"]     # one breakpoint, one turn
+    'one'
     """
     system = body.get("system")
     if isinstance(system, str) and system.strip():
