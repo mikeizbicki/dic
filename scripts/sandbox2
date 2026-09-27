@@ -1,0 +1,509 @@
+#!/bin/bash
+#
+# sandbox2 -- a default-deny jail, and the seccomp filter it runs under.
+#
+# This file is two commands that are meant to be used as a pair, and can be
+# installed under two names:
+#
+#     ln -s /path/to/sandbox2 ~/bin/sandbox2
+#     ln -s /path/to/sandbox2 ~/bin/sandbox-apply-seccomp
+#
+# sandbox2 [--unsafe-* ...] [bwrap-args...] [-- CMD [args...]]
+#
+#     Run CMD (default: $SHELL) in a jail that exposes almost nothing of the
+#     host.  Every argument that is not one of the --unsafe-* flags below is
+#     a bwrap(1) argument, appended after the default policy.  bwrap applies
+#     its arguments left to right, so a later one wins: this script sets the
+#     default and each relaxation is an argument the caller typed.  Nothing
+#     here can take a wall down quietly.
+#
+# sandbox-apply-seccomp [--mode=none|host|proxy] [--] CMD [args...]
+#
+#     Install the syscall filter into this process, then exec CMD.  It is
+#     what runs first inside the jail, and it is usable on its own.  The
+#     source is the C below, compiled into $XDG_CACHE_HOME/sandbox2 on first
+#     use, because bwrap(1) cannot express a filter: it takes a compiled one.
+#
+# The default jail is:
+#
+#   * Every namespace unshared -- user, mount, uts, ipc, pid, cgroup, net.
+#     There is no abstract unix socket to rendezvous through, no shared
+#     /dev/shm, no shared mount table, no shared /proc, and no host network.
+#     All capabilities are dropped.
+#
+#   * The root filesystem is empty except for the loader and the tools: /usr
+#     and the few files in /etc that describe the filesystem are bound
+#     read-only, the standard symlinks are made again, and fresh /proc, /dev,
+#     /run, /var/tmp and /tmp are mounted.  /home, /root, /srv, /mnt, /opt,
+#     /boot, /var, /sys and /run/user are not bound at all: an ssh key, a
+#     cloud credential, a database socket is not hidden behind a permission
+#     bit, it is absent from the map.  `--ro-bind / /` is how that fence
+#     comes down.
+#
+#   * The current directory is bound read-write and nothing else is.  The
+#     work you are in is the work that can be done; `--ro-bind "$PWD" "$PWD"`
+#     afterwards makes even that read-only.
+#
+#   * The environment is emptied and refilled with PATH, TERM, LANG, LC_ALL,
+#     TZ and HOME=/tmp only, so an exported API key is not a variable the
+#     payload can read.  `--setenv K=V` puts one back.
+#
+#   * A seccomp filter is installed before the payload runs.  The io_uring
+#     syscalls are refused -- they perform file and socket operations in
+#     kernel context, which is how a socket filter is normally bypassed --
+#     then the socket families are filtered by argument, and then the rest of
+#     the kernel surface in the list below is cut back.  A refused call fails
+#     with EPERM, so a payload that needs one says so instead of vanishing.
+#
+# The unsafe flags, named unsafe because they are the only walls this script
+# can take down without a bwrap argument to show for it:
+#
+#   --unsafe-no-seccomp       do not install the filter
+#   --unsafe-seccomp=MODE     install MODE, where the default is `none`, or
+#                             `host` when --share-net is asked for
+#
+# Examples:
+#
+#   sandbox2 -- make -j
+#   sandbox2 --ro-bind /home/me/.gitconfig /home/me/.gitconfig -- git log
+#   sandbox2 --bind /home/me/src /home/me/src -- make -C /home/me/src
+#   sandbox2 --share-net -- cargo build
+#
+# The filter is inherited by everything CMD runs and cannot be removed.
+# A 32-bit payload is killed rather than filtered, because the filter knows
+# one ABI and an unfiltered ABI is not something to allow.
+
+set -euo pipefail
+
+self=${BASH_SOURCE[0]}
+helper_name=sandbox-apply-seccomp
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/sandbox2
+
+die() {
+    printf 'sandbox2: %s\n' "$*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<'USAGE'
+usage: sandbox2 [--unsafe-* ...] [bwrap-args...] [-- CMD [args...]]
+       sandbox-apply-seccomp [--mode=none|host|proxy] [--] CMD [args...]
+
+Run CMD (default: $SHELL) in a default-deny jail.  Every argument that is
+not one of the --unsafe-* flags is passed to bwrap(1) after the default
+policy, so it can only add to what the sandbox sees:
+
+    sandbox2 -- make -j
+    sandbox2 --ro-bind /home/me/.gitconfig /home/me/.gitconfig -- git log
+    sandbox2 --bind /home/me/src /home/me/src -- make -C /home/me/src
+    sandbox2 --share-net -- cargo build
+
+  --unsafe-no-seccomp     do not install the syscall filter
+  --unsafe-seccomp=MODE   one of none, host, proxy, or off; the default is
+                          none, or host when --share-net is among the bwrap
+                          arguments
+
+The jail, the paths it leaves out and what the filter refuses are described
+at the top of this script.  bwrap(1) documents the rest.
+USAGE
+}
+
+# The filter bwrap(1) cannot build for us.  Compiled once, into the cache.
+build_helper() {
+    local bin=$cache/$helper_name
+    local cc=${CC:-cc} out=$cache/.$helper_name.$$
+
+    if [[ -x $bin && ! $bin -ot $self ]]; then
+        printf '%s\n' "$bin"
+        return 0
+    fi
+    command -v "$cc" >/dev/null 2>&1 ||
+        die "no C compiler to build $helper_name with (set CC=...)"
+    mkdir -p "$cache"
+
+    "$cc" -std=gnu99 -O2 -Wall -o "$out" -x c - <<'EOF' || {
+        rm -f "$out"
+        die "$cc could not build $helper_name"
+    }
+/* sandbox-apply-seccomp -- install a seccomp filter, then exec.
+ *
+ * The filter is hand-assembled cBPF, so this needs the kernel headers and
+ * nothing else: no libseccomp, no runtime, no state.
+ *
+ * Every denial returns EPERM.  A payload that needs one of these calls
+ * should be able to read the error and stop; a filter that kills makes a bug
+ * and a wall look the same.
+ */
+#define _GNU_SOURCE
+#include <errno.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <sys/prctl.h>
+#include <sys/socket.h>
+#include <sys/syscall.h>
+
+#if defined(__x86_64__)
+# define ARCH AUDIT_ARCH_X86_64
+#elif defined(__aarch64__)
+# define ARCH AUDIT_ARCH_AARCH64
+#elif defined(__riscv) && __riscv_xlen == 64
+# define ARCH AUDIT_ARCH_RISCV64
+#elif defined(__powerpc64__) && defined(__LITTLE_ENDIAN__)
+# define ARCH AUDIT_ARCH_PPC64LE
+#elif defined(__s390x__)
+# define ARCH AUDIT_ARCH_S390X
+#else
+# error "sandbox-apply-seccomp: add this architecture's AUDIT_ARCH_*"
+#endif
+
+#ifndef SECCOMP_RET_KILL_PROCESS
+# define SECCOMP_RET_KILL_PROCESS 0x80000000U
+#endif
+
+#define DENIED (SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA))
+
+#define MAX_FILTER 256
+
+static void
+overflow (void)
+{
+    fputs ("sandbox-apply-seccomp: filter overflow\n", stderr);
+    exit (1);
+}
+
+/* One denial: compare the accumulated syscall number and jump over the
+ * return.  The accumulator holds the number until a family check loads
+ * something else, which is why the family checks come last. */
+static size_t
+deny (struct sock_filter *f, size_t n, int nr)
+{
+    if (n + 2 > MAX_FILTER)
+        overflow ();
+    f[n++] = (struct sock_filter) BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1);
+    f[n++] = (struct sock_filter) BPF_STMT (BPF_RET | BPF_K, DENIED);
+    return n;
+}
+
+/* Refuse one address family to socket(2).  This is the whole reason the
+ * filter is worth having: a fresh network namespace stops the payload from
+ * reaching the network, and this stops it from reaching it by another road
+ * if the caller ever asks for --share-net. */
+static size_t
+deny_family (struct sock_filter *f, size_t n, int family)
+{
+#ifdef __NR_socket
+    if (n + 5 > MAX_FILTER)
+        overflow ();
+    f[n++] = (struct sock_filter) BPF_STMT (BPF_LD | BPF_W | BPF_ABS,
+                                            offsetof (struct seccomp_data, nr));
+    f[n++] = (struct sock_filter) BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K,
+                                            __NR_socket, 0, 3);
+    f[n++] = (struct sock_filter) BPF_STMT (BPF_LD | BPF_W | BPF_ABS,
+                                            offsetof (struct seccomp_data, args[0]));
+    f[n++] = (struct sock_filter) BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K,
+                                            family, 0, 1);
+    f[n++] = (struct sock_filter) BPF_STMT (BPF_RET | BPF_K, DENIED);
+#else
+    (void) f; (void) n; (void) family;
+#endif
+    return n;
+}
+
+/* The io_uring calls run file and socket operations in kernel context, so
+ * they are a way around everything below them; the rest is the kernel
+ * surface a payload has no use for and an exploit has plenty. */
+static const int surface[] = {
+#ifdef __NR_io_uring_setup
+    __NR_io_uring_setup,
+    __NR_io_uring_enter,
+    __NR_io_uring_register,
+#endif
+#ifdef __NR_userfaultfd
+    __NR_userfaultfd,
+#endif
+#ifdef __NR_perf_event_open
+    __NR_perf_event_open,
+#endif
+#ifdef __NR_bpf
+    __NR_bpf,
+#endif
+#ifdef __NR_pidfd_getfd
+    __NR_pidfd_getfd,
+#endif
+    __NR_kexec_load,
+#ifdef __NR_kexec_file_load
+    __NR_kexec_file_load,
+#endif
+    __NR_init_module,
+    __NR_finit_module,
+    __NR_delete_module,
+    __NR_mount,
+    __NR_umount2,
+    __NR_pivot_root,
+    __NR_unshare,
+    __NR_setns,
+    __NR_ptrace,
+    __NR_process_vm_readv,
+    __NR_process_vm_writev,
+    __NR_add_key,
+    __NR_request_key,
+    __NR_keyctl,
+    __NR_open_by_handle_at,
+#ifdef __NR_iopl
+    __NR_iopl,
+#endif
+#ifdef __NR_ioperm
+    __NR_ioperm,
+#endif
+    __NR_reboot,
+    __NR_swapon,
+    __NR_swapoff,
+    __NR_acct,
+    __NR_quotactl,
+    __NR_adjtimex,
+    __NR_settimeofday,
+    __NR_clock_settime,
+#ifdef __NR_clock_adjtime
+    __NR_clock_adjtime,
+#endif
+    __NR_syslog,
+};
+
+static size_t
+build (struct sock_filter *f, const char *mode)
+{
+    size_t n = 0, i;
+
+    /* One ABI only.  A 32-bit payload under a 64-bit filter is not ours to
+     * judge, and running it unfiltered is worse than refusing it. */
+    f[n++] = (struct sock_filter) BPF_STMT (BPF_LD | BPF_W | BPF_ABS,
+                                            offsetof (struct seccomp_data, arch));
+    f[n++] = (struct sock_filter) BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K, ARCH, 1, 0);
+    f[n++] = (struct sock_filter) BPF_STMT (BPF_RET | BPF_K,
+                                            SECCOMP_RET_KILL_PROCESS);
+
+    f[n++] = (struct sock_filter) BPF_STMT (BPF_LD | BPF_W | BPF_ABS,
+                                            offsetof (struct seccomp_data, nr));
+    for (i = 0; i < sizeof surface / sizeof *surface; i++)
+        n = deny (f, n, surface[i]);
+
+    /* host filters no family at all: the caller asked for the network, and
+     * a proxy is the caller's business, not ours. */
+    if (strcmp (mode, "none") == 0) {
+        n = deny_family (f, n, AF_INET);
+        n = deny_family (f, n, AF_INET6);
+    } else if (strcmp (mode, "proxy") == 0) {
+        n = deny_family (f, n, AF_UNIX);
+    }
+
+    if (n + 1 > MAX_FILTER)
+        overflow ();
+    f[n++] = (struct sock_filter) BPF_STMT (BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    return n;
+}
+
+static void
+usage (void)
+{
+    fputs ("usage: sandbox-apply-seccomp [--mode=none|host|proxy] [--] CMD [args...]\n"
+           "\n"
+           "Install a seccomp filter, then exec CMD.\n"
+           "\n"
+           "  --mode=none   refuse AF_INET and AF_INET6 sockets (the default)\n"
+           "  --mode=host   refuse no address family\n"
+           "  --mode=proxy  refuse AF_UNIX, leaving the network to a proxy\n"
+           "\n"
+           "The filter is inherited by everything CMD runs and cannot be removed.\n"
+           "Refused calls fail with EPERM; another ABI is killed instead.\n",
+           stderr);
+}
+
+int
+main (int argc, char **argv)
+{
+    struct sock_filter filter[MAX_FILTER];
+    struct sock_fprog prog;
+    const char *mode = "none";
+    int i = 1;
+
+    while (i < argc && argv[i][0] == '-')
+      {
+        if (strcmp (argv[i], "--") == 0)
+          {
+            i++;
+            break;
+          }
+        if (strcmp (argv[i], "-h") == 0 || strcmp (argv[i], "--help") == 0)
+          {
+            usage ();
+            return 0;
+          }
+        if (strncmp (argv[i], "--mode=", 7) == 0)
+          {
+            mode = argv[i] + 7;
+            i++;
+            continue;
+          }
+        fprintf (stderr, "sandbox-apply-seccomp: unknown flag: %s\n", argv[i]);
+        usage ();
+        return 2;
+      }
+
+    if (strcmp (mode, "none") != 0 && strcmp (mode, "host") != 0 &&
+        strcmp (mode, "proxy") != 0)
+      {
+        fprintf (stderr, "sandbox-apply-seccomp: unknown mode: %s\n", mode);
+        return 2;
+      }
+    if (i >= argc)
+      {
+        usage ();
+        return 2;
+      }
+
+    prog.len = build (filter, mode);
+    prog.filter = filter;
+
+    if (prctl (PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
+      {
+        perror ("sandbox-apply-seccomp: prctl(PR_SET_NO_NEW_PRIVS)");
+        return 1;
+      }
+    if (prctl (PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) != 0)
+      {
+        perror ("sandbox-apply-seccomp: prctl(PR_SET_SECCOMP)");
+        return 1;
+      }
+
+    execvp (argv[i], argv + i);
+    perror ("sandbox-apply-seccomp: execvp");
+    return 127;
+}
+EOF
+
+    chmod 0755 "$out"
+    mv -f "$out" "$bin"
+    printf '%s\n' "$bin"
+}
+
+# Installed as sandbox-apply-seccomp, this file is the filter.
+case ${self##*/} in
+    sandbox-apply-seccomp)
+        exec "$(build_helper)" "$@"
+        ;;
+esac
+
+run() {
+    local -a user=() cmd=()
+    local seccomp=auto mode=none arg
+
+    while (( $# )); do
+        case $1 in
+            -h|--help)           usage; exit 0 ;;
+            --unsafe-no-seccomp) seccomp=off; shift ;;
+            --unsafe-seccomp=*)  seccomp=${1#--unsafe-seccomp=}; shift ;;
+            --)                  shift; cmd=("$@"); break ;;
+            *)                   user+=("$1"); shift ;;
+        esac
+    done
+
+    case $seccomp in
+        auto)                mode=none ;;
+        off|none|host|proxy) mode=$seccomp ;;
+        *) die "unknown seccomp mode '$seccomp' (want none, host, proxy, off)" ;;
+    esac
+    if [[ $seccomp == auto ]]; then
+        for arg in "${user[@]}"; do
+            [[ $arg == --share-net ]] && mode=host
+        done
+    fi
+    if [[ $seccomp == off ]]; then
+        echo "sandbox2: no syscall filter (--unsafe-no-seccomp)" >&2
+    elif [[ $seccomp != auto ]]; then
+        echo "sandbox2: seccomp mode=$mode (--unsafe-seccomp)" >&2
+    fi
+
+    (( ${#cmd[@]} )) || cmd=("${SHELL:-/bin/bash}")
+    command -v bwrap >/dev/null 2>&1 || die "bubblewrap(1) not found"
+
+    # bwrap applies its arguments left to right, so this block is the policy
+    # and the caller's arguments are the exceptions to it.
+    local -a bargs=(
+        --die-with-parent
+        --new-session
+        --unshare-user
+        --unshare-ipc
+        --unshare-pid
+        --unshare-uts
+        --unshare-cgroup
+        --unshare-net
+        --cap-drop ALL
+    )
+
+    local p
+    [[ -e /usr ]] && bargs+=(--ro-bind /usr /usr)
+    for p in /bin /sbin /lib /lib32 /lib64 /libx32; do
+        [[ -e $p ]] || continue
+        if [[ -L $p ]]; then
+            bargs+=(--symlink "$(readlink "$p")" "$p")
+        else
+            bargs+=(--ro-bind "$p" "$p")
+        fi
+    done
+    for p in \
+        /etc/alternatives /etc/bash.bashrc /etc/ca-certificates \
+        /etc/ca-certificates.conf /etc/fonts /etc/gai.conf /etc/group \
+        /etc/host.conf /etc/hosts /etc/inputrc /etc/ld.so.cache \
+        /etc/ld.so.conf /etc/ld.so.conf.d /etc/localtime /etc/mime.types \
+        /etc/nsswitch.conf /etc/os-release /etc/passwd /etc/pki \
+        /etc/profile /etc/profile.d /etc/protocols /etc/resolv.conf \
+        /etc/services /etc/ssl /etc/terminfo /etc/timezone; do
+        [[ -e $p ]] && bargs+=(--ro-bind "$p" "$p")
+    done
+
+    bargs+=(
+        --proc /proc
+        --dev /dev
+        --tmpfs /dev/shm
+        --tmpfs /var/tmp
+        --tmpfs /run
+    )
+
+    if [[ $PWD == / ]]; then
+        echo "sandbox2: not binding / read-write; add --bind DIR DIR" >&2
+    else
+        bargs+=(--bind "$PWD" "$PWD")
+    fi
+    bargs+=(--chdir "$PWD")
+
+    bargs+=(--clearenv --setenv HOME /tmp)
+    for p in PATH TERM LANG LC_ALL TZ; do
+        [[ -v $p ]] && bargs+=(--setenv "$p" "${!p}")
+    done
+
+    # The caller's walls come down here, and then /tmp comes back: it is
+    # always a fresh tmpfs, so it is always writable and always ours, and it
+    # holds the one file the jail needs from the host.
+    bargs+=("${user[@]}")
+    bargs+=(--tmpfs /tmp)
+
+    if [[ $seccomp == off ]]; then
+        bargs+=(-- "${cmd[@]}")
+    else
+        local helper init
+        helper=$(build_helper)
+        init=/tmp/$helper_name
+        bargs+=(--ro-bind "$helper" "$init")
+        bargs+=(-- "$init" "--mode=$mode" -- "${cmd[@]}")
+    fi
+
+    exec bwrap "${bargs[@]}"
+}
+
+run "$@"
