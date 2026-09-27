@@ -40,6 +40,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/syscall.h> /* __NR_*; without it every rule below vanishes */
 #include <linux/audit.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
@@ -92,30 +93,28 @@ deny (int nr)
   filter[n++] = (struct sock_filter) BPF_STMT (BPF_RET | BPF_K, DENIED);
 }
 
+/* Every syscall named below is written out and never guarded.  A guard that
+ * is false skips its rule, and a filter missing a rule is still a filter: it
+ * installs, it runs, and nothing says what it stopped checking.  A number
+ * the headers do not have is therefore a compile error, which means the
+ * headers are older than the kernel the filter is for.  iopl and ioperm are
+ * the exception rather than the rule: no architecture but x86 and ia64
+ * defines them, and there the call really does not exist. */
 static const int surface[] = {
-#ifdef __NR_io_uring_setup
-  /* One family, added together, so one guard covers all three. */
+  /* io_uring: the hole is the subsystem, so all three go together, and
+   * nothing below this point is worth having while a caller can reach it. */
   __NR_io_uring_setup,
   __NR_io_uring_enter,
   __NR_io_uring_register,
-#endif
 
   /* Faulting and counting memory the caller was never given. */
-#ifdef __NR_userfaultfd
   __NR_userfaultfd,
-#endif
-#ifdef __NR_perf_event_open
   __NR_perf_event_open,
-#endif
 
   /* The kernel's own program interface, and loading code into it. */
-#ifdef __NR_bpf
   __NR_bpf,
-#endif
   __NR_kexec_load,
-#ifdef __NR_kexec_file_load
   __NR_kexec_file_load,
-#endif
   __NR_init_module,
   __NR_finit_module,
   __NR_delete_module,
@@ -125,12 +124,8 @@ static const int surface[] = {
   __NR_ptrace,
   __NR_process_vm_readv,
   __NR_process_vm_writev,
-#ifdef __NR_pidfd_getfd
   __NR_pidfd_getfd,
-#endif
-#ifdef __NR_open_by_handle_at
   __NR_open_by_handle_at,
-#endif
 
   /* The kernel keyring, which is somewhere to keep a secret the mount map
    * was meant to put out of reach. */
@@ -155,10 +150,10 @@ static const int surface[] = {
   __NR_adjtimex,
   __NR_settimeofday,
   __NR_clock_settime,
-#ifdef __NR_clock_adjtime
   __NR_clock_adjtime,
-#endif
   __NR_syslog,
+
+  /* x86 and ia64 only; on every other architecture the call is not there. */
 #ifdef __NR_iopl
   __NR_iopl,
 #endif
