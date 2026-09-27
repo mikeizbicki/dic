@@ -22,8 +22,65 @@
 # permission bit: a file that was never mounted cannot be read, so it
 # cannot be exfiltrated by a model that reads what a tool printed here.
 #
+# A mount rule is not the whole wall, so the function installs one syscall
+# rule as well.  io_uring does file and socket work in kernel context: it
+# never calls open(2) or socket(2), so it walks around a filter that watches
+# those calls.  bwrap cannot express that -- --seccomp wants a filter that is
+# already compiled -- so the C file beside this one is the filter, and it is
+# built into the cache the first time the function runs.  If it cannot be
+# built, the function refuses to run anything, because a jail that quietly
+# drops its filter is worse than no jail at all.
+#
 # Sourcing this file defines the function and does nothing else.  It sets
 # no shell option, exports no variable and runs no command.
+
+# Build the filter if the cache does not have it, and print the path to the
+# compiled blob.  This is a cache, not state: the blob is named after a
+# checksum of the C it came from, so an edited source is a different file
+# and there is no staleness to reason about.  Nothing here runs at source
+# time, and nothing here touches the calling shell.
+#
+# SANDBOX_SECCOMP_BLOB points at a blob built on some other machine, for
+# when there is no compiler; CC names the compiler.  There is no way to ask
+# for no filter, because installing one is what this function is for.
+sandbox-seccomp-blob() {
+    local src dir sum cache bin blob
+
+    if [[ -n ${SANDBOX_SECCOMP_BLOB:-} ]]; then
+        printf '%s\n' "$SANDBOX_SECCOMP_BLOB"
+        return 0
+    fi
+
+    # BASH_SOURCE[0] inside a function names the file the function was
+    # defined in, which is this one, whoever sourced it and from wherever.
+    src=${BASH_SOURCE[0]}
+    dir=${src%/*}
+    [[ $dir == "$src" ]] && dir=.
+    dir=$(cd -- "$dir" && pwd) || return 1
+    src=$dir/sandbox-seccomp.c
+    [[ -f $src ]] || {
+        printf 'sandbox: %s: not found\n' "$src" >&2
+        return 1
+    }
+
+    sum=$(cksum <"$src") || return 1
+    sum=${sum// /-}
+    cache=${XDG_CACHE_HOME:-$HOME/.cache}/geni
+    bin=$cache/sandbox-seccomp-$sum
+    blob=$bin.bpf
+
+    if [[ ! -s $blob ]]; then
+        mkdir -p "$cache" || return 1
+        printf 'sandbox: building %s\n' "$blob" >&2
+        ${CC:-cc} -std=gnu99 -O2 -Wall -Wextra -o "$bin.$$" "$src" ||
+            return 1
+        "$bin.$$" >"$blob.$$" || return 1
+        mv -f "$bin.$$" "$bin" || return 1
+        mv -f "$blob.$$" "$blob" || return 1
+    fi
+
+    printf '%s\n' "$blob"
+}
 
 sandbox() {
     # `local -a` gives this call its own array, so two calls cannot collide
@@ -129,8 +186,16 @@ sandbox() {
     done
 
     # The caller's arguments come last, so they are the exceptions to
-    # everything above, and bwrap runs in a subshell: `exec` then replaces
-    # that subshell and not the shell which sourced this file, which would
-    # otherwise end the terminal session.
-    ( exec bwrap "${args[@]}" "$@" )
+    # everything above.  The syscall filter goes before them and not after,
+    # because the caller's arguments may end with a `--` and bwrap would
+    # then read --seccomp as part of the command instead of as an option.
+    #
+    # bwrap takes a descriptor number for --seccomp and reads the compiled
+    # filter from it, so the redirection below lends it fd 3 for the life of
+    # the sandbox.  The subshell is why the terminal survives: `exec` then
+    # replaces that subshell and not the shell which sourced this file.
+    local blob
+    blob=$(sandbox-seccomp-blob) || return 1
+
+    ( exec bwrap "${args[@]}" --seccomp 3 "$@" 3<"$blob" )
 }

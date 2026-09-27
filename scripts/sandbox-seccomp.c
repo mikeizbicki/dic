@@ -1,0 +1,237 @@
+/* sandbox-seccomp.c -- the syscall filter sandbox4.sh installs.
+ *
+ * bwrap(1) cannot express a syscall policy: --seccomp takes a filter that is
+ * already compiled.  This program is therefore the policy.  Run it with no
+ * arguments and it writes one struct sock_filter array to stdout, which is
+ * the exact shape bwrap reads back from the descriptor it is handed.  It
+ * does nothing else, takes no options, and keeps no state.
+ *
+ * The filter allows by default.  A syscall that no rule names falls through
+ * to SECCOMP_RET_ALLOW, so everything a normal program needs keeps working
+ * and only what is listed below is refused.  A denial returns EPERM instead
+ * of killing the process, so a program that needs one of these calls fails
+ * in a way it can report, and a wall is never mistaken for a crash.  The
+ * single exception is the architecture check, for the reason in build().
+ *
+ * The order of the rules is the part that is easy to get wrong.
+ *
+ *   1. The architecture, first.  Every rule after it compares a syscall
+ *      number, and a syscall number means a different thing under a
+ *      different ABI.  A payload from another ABI would be judged by
+ *      numbers it does not use, so it is killed rather than filtered.
+ *
+ *   2. io_uring, next.  io_uring performs file and socket work in kernel
+ *      context.  It does not call open(2) or socket(2), so a rule that
+ *      watches those calls is walked around by it completely.  A filter
+ *      that means to constrain a program by syscall has to close this hole
+ *      before anything under it is worth having.
+ *
+ *   3. Everything else, which is kernel surface a payload has no use for
+ *      and an exploit has plenty.
+ *
+ * Nothing here restricts which files can be opened.  That is the mount
+ * map's job, in sandbox4.sh, and a file that was never mounted cannot be
+ * named in the first place.
+ */
+
+#define _GNU_SOURCE
+#include <errno.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+
+/* The ABI this filter knows.  Anything else is killed, so the list has to
+ * be complete for the architectures this is meant to run on; a port to a
+ * new one is a compile error rather than a filter that quietly allows. */
+#if defined(__x86_64__)
+# define ARCH AUDIT_ARCH_X86_64
+#elif defined(__aarch64__)
+# define ARCH AUDIT_ARCH_AARCH64
+#elif defined(__riscv) && __riscv_xlen == 64
+# define ARCH AUDIT_ARCH_RISCV64
+#elif defined(__powerpc64__) && defined(__LITTLE_ENDIAN__)
+# define ARCH AUDIT_ARCH_PPC64LE
+#elif defined(__s390x__)
+# define ARCH AUDIT_ARCH_S390X
+#else
+# error "sandbox-seccomp.c: add this architecture's AUDIT_ARCH_* constant"
+#endif
+
+#ifndef SECCOMP_RET_KILL_PROCESS
+# define SECCOMP_RET_KILL_PROCESS 0x80000000U
+#endif
+
+/* EPERM in the encoding seccomp wants: the action in the high bits and the
+ * error number in the low ones. */
+#define DENIED (SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA))
+
+/* Room for the rules below twice over, and a fixed array so that writing a
+ * few hundred bytes never allocates. */
+#define MAX_FILTER 256
+
+static struct sock_filter filter[MAX_FILTER];
+static size_t n;
+
+/* Refuse one syscall.  The accumulator already holds the syscall number,
+ * loaded once in build(); a comparison that does not match steps over the
+ * return that follows it. */
+static void
+deny (int nr)
+{
+  if (n + 2 > MAX_FILTER)
+    {
+      fputs ("sandbox-seccomp: filter overflow\n", stderr);
+      exit (1);
+    }
+  filter[n++] = (struct sock_filter) BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K,
+                                               nr, 0, 1);
+  filter[n++] = (struct sock_filter) BPF_STMT (BPF_RET | BPF_K, DENIED);
+}
+
+static const int surface[] = {
+#ifdef __NR_io_uring_setup
+  /* One family, added together, so one guard covers all three. */
+  __NR_io_uring_setup,
+  __NR_io_uring_enter,
+  __NR_io_uring_register,
+#endif
+
+  /* Faulting and counting memory the caller was never given. */
+#ifdef __NR_userfaultfd
+  __NR_userfaultfd,
+#endif
+#ifdef __NR_perf_event_open
+  __NR_perf_event_open,
+#endif
+
+  /* The kernel's own program interface, and loading code into it. */
+#ifdef __NR_bpf
+  __NR_bpf,
+#endif
+  __NR_kexec_load,
+#ifdef __NR_kexec_file_load
+  __NR_kexec_file_load,
+#endif
+  __NR_init_module,
+  __NR_finit_module,
+  __NR_delete_module,
+
+  /* Reaching into another process.  pidfd_getfd takes an open file
+   * descriptor from one, which is a way around every mount rule there is. */
+  __NR_ptrace,
+  __NR_process_vm_readv,
+  __NR_process_vm_writev,
+#ifdef __NR_pidfd_getfd
+  __NR_pidfd_getfd,
+#endif
+#ifdef __NR_open_by_handle_at
+  __NR_open_by_handle_at,
+#endif
+
+  /* The kernel keyring, which is somewhere to keep a secret the mount map
+   * was meant to put out of reach. */
+  __NR_add_key,
+  __NR_request_key,
+  __NR_keyctl,
+
+  /* Mounting is bwrap's job, and it is finished before this filter loads,
+   * so a call here can only be an attempt to leave. */
+  __NR_mount,
+  __NR_umount2,
+  __NR_pivot_root,
+  __NR_unshare,
+  __NR_setns,
+
+  /* Machine-wide state, which a payload has no business changing. */
+  __NR_reboot,
+  __NR_swapon,
+  __NR_swapoff,
+  __NR_quotactl,
+  __NR_acct,
+  __NR_adjtimex,
+  __NR_settimeofday,
+  __NR_clock_settime,
+#ifdef __NR_clock_adjtime
+  __NR_clock_adjtime,
+#endif
+  __NR_syslog,
+#ifdef __NR_iopl
+  __NR_iopl,
+#endif
+#ifdef __NR_ioperm
+  __NR_ioperm,
+#endif
+};
+
+/* Lay the program out.  bwrap installs the filter in the child after the
+ * mounts are done, so nothing here has to leave room for bwrap's own work
+ * or for the exec that follows. */
+static void
+build (void)
+{
+  size_t i;
+
+  n = 0;
+
+  filter[n++] = (struct sock_filter) BPF_STMT (BPF_LD | BPF_W | BPF_ABS,
+                                               offsetof (struct seccomp_data,
+                                                         arch));
+  filter[n++] = (struct sock_filter) BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K,
+                                               ARCH, 1, 0);
+  filter[n++] = (struct sock_filter) BPF_STMT (BPF_RET | BPF_K,
+                                               SECCOMP_RET_KILL_PROCESS);
+
+  filter[n++] = (struct sock_filter) BPF_STMT (BPF_LD | BPF_W | BPF_ABS,
+                                               offsetof (struct seccomp_data,
+                                                         nr));
+  for (i = 0; i < sizeof surface / sizeof *surface; i++)
+    deny (surface[i]);
+
+  if (n + 1 > MAX_FILTER)
+    {
+      fputs ("sandbox-seccomp: filter overflow\n", stderr);
+      exit (1);
+    }
+  filter[n++] = (struct sock_filter) BPF_STMT (BPF_RET | BPF_K,
+                                               SECCOMP_RET_ALLOW);
+}
+
+/* Write the whole program.  stdout is a file under sandbox4.sh, so a short
+ * write is unlikely, but the loop costs nothing and removes the question. */
+static int
+emit (void)
+{
+  const char *p = (const char *) filter;
+  size_t left = n * sizeof filter[0];
+
+  while (left > 0)
+    {
+      ssize_t w = write (STDOUT_FILENO, p, left);
+
+      if (w < 0)
+        {
+          if (errno == EINTR)
+            continue;
+          return -1;
+        }
+      p += w;
+      left -= (size_t) w;
+    }
+  return 0;
+}
+
+int
+main (void)
+{
+  build ();
+  if (emit () != 0)
+    {
+      perror ("sandbox-seccomp: write");
+      return 1;
+    }
+  return 0;
+}
