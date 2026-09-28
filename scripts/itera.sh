@@ -38,8 +38,20 @@ Every other argument is passed on to committe's first round.
 EOF
 }
 
+itera-detect-test() {
+    # do not sandbox if the user specifies a command
+    [[ -n ${ITERA_TEST:-} ]] && { echo "$ITERA_TEST"; return; }
+
+    # sandbox autodetected test commands
+    [[ -f pyproject.toml || -f pytest.ini || -f setup.cfg || -d tests ]] \
+                                              && { echo 'sandbox pytest'; return; }
+    echo 'itera-error: cannot detect tests; set ITERA_TEST or --test' >&2
+    return 1
+}
+
 function itera() {
-    local test_cmd="${ITERA_TEST:-./test.sh}"
+    #local test_cmd="${ITERA_TEST:-./test.sh}"
+    local test_cmd="$(itera-detect-test)"
     local max="${ITERA_MAX:-8}"
     local -a request=()
 
@@ -69,7 +81,7 @@ function itera() {
     # The tree must already be green.  Otherwise the loop would be fixing
     # pre-existing failures, and a green tree would otherwise end the loop
     # before it had made the change being asked for.
-    if ! local pre=$(sandbox -- $test_cmd 2>&1); then
+    if ! local pre=$($test_cmd 2>&1); then
         printf '%s\n' "$pre" >&2
         echo 'itera-error: tests do not pass before starting' >&2
         return 1
