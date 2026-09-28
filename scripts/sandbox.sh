@@ -177,6 +177,17 @@ sandbox() {
     # /home/me/proj appears on its own and the rest of /home/me does not.
     args+=(--bind "$PWD" "$PWD")
 
+    # The interpreter can live outside $PWD: in a git worktree it sits in
+    # the main worktree, and bwrap then cannot execvp the test runner
+    # because that path was never mounted.  Bring in that one path
+    # read-only, unless it is already inside $PWD and writable there.
+    if [[ -n ${VIRTUAL_ENV:-} && -d $VIRTUAL_ENV ]]; then
+        case $VIRTUAL_ENV/ in
+            "$PWD"/*) ;;
+            *) args+=(--ro-bind "$VIRTUAL_ENV" "$VIRTUAL_ENV") ;;
+        esac
+    fi
+
     # Empty the environment, then put back only what a program needs to find
     # itself.  An exported API key is not a variable the payload can read
     # here; --setenv K=V puts one back when a build actually needs it.
