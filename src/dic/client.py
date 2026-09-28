@@ -22,9 +22,9 @@ import http.client, json, os, re, sys, time, urllib.parse
 
 from dic import config, output, price
 from dic.options import flag, resolve
-from dic.store import (INSERT, STATS, TOOL_STATS, config_dir, db, history,
-                       normalize, session_read, session_write,
-                       store_attachment, turns_from_rows, ulid)
+from dic.store import (INSERT, LOG, LOG_ALL, STATS, TOOL_STATS, config_dir, db,
+                       history, normalize, resolve_ref, session_read,
+                       session_write, store_attachment, turns_from_rows, ulid)
 from dic.tty import (BLUE, RESET, THINKING, DicError, Line, pv_update,
                      report, summary, use_color)
 
@@ -106,6 +106,94 @@ def table(rows):
         "\t".join("" if cell is None else str(cell) for cell in row) + "\n"
         for row in ([rows[0].keys()] if rows else [])
         + [list(r) for r in rows])
+
+
+def prompt_line(text, width=60):
+    """The first line of a prompt, whitespace collapsed and shortened.
+
+    One list row is one line, so a multi-line prompt is flattened here rather
+    than allowed to break the table a picker is reading.
+
+    >>> prompt_line("hello\\nworld")
+    'hello'
+    >>> len(prompt_line("x" * 70))
+    60
+    """
+    line = " ".join((text or "").split("\n", 1)[0].split())
+    return line if len(line) <= width else line[:width - 1] + "…"
+
+
+def log_rows(conn, mid, limit, everything=False):
+    """The rows --log prints: every message, or the chain above mid.
+
+    A session's chain is walked the same way history() walks it, so a tool
+    loop's rounds all appear and the picker shows the tree -c would resume.
+    """
+    if everything:
+        return conn.execute(LOG_ALL, (limit,)).fetchall()
+    if not mid:
+        return []
+    return conn.execute(LOG, (mid, limit)).fetchall()
+
+
+def log_table(rows):
+    """Rows of --log as one tab-separated table: mid first, prompt last.
+
+    The header is a row of its own, as --stats's is, so a picker skips it
+    with --header-lines=1 and reads column one of every other line as a mid.
+
+    >>> log_table([])
+    'mid\\twhen\\tmodel\\tcost\\tprompt\\n'
+    """
+    lines = ["\t".join(("mid", "when", "model", "cost", "prompt"))]
+    for row in rows:
+        when = (time.strftime("%Y-%m-%d %H:%M",
+                              time.localtime(row["t_start"] / 1e9))
+                if row["t_start"] else "")
+        cost = "" if row["cost"] is None else f"${row['cost']:.4f}"
+        lines.append("\t".join((row["mid"], when, row["model_id"] or "",
+                                cost, prompt_line(row["user"]))))
+    return "".join(line + "\n" for line in lines)
+
+
+def message_text(conn, mid):
+    """One message as label/value lines: what --show prints in a preview.
+
+    Fixed labels, so a picker's pane does not jump as the selection moves,
+    and `response` and not `response_raw`, because what a human decides from
+    is the answer and not the wire.
+    """
+    row = conn.execute("SELECT * FROM messages WHERE mid = ?", (mid,)).fetchone()
+    if not row:
+        raise DicError(f"no such mid: {mid}")
+    lines = []
+
+    def put(label, value):
+        lines.append(f"{label + ':':<10}{'' if value is None else value}")
+
+    put("mid", row["mid"])
+    put("when", time.strftime("%Y-%m-%d %H:%M:%S",
+                              time.localtime(row["t_start"] / 1e9))
+        if row["t_start"] else "")
+    put("model", f"{row['model_id']} ({row['api_type']})")
+    put("status", row["status"])
+    _, _, cost = summary(json.loads(row["usage"] or "{}"),
+                         json.loads(row["cost_items"] or "[]"),
+                         None, {}, 1).partition(": ")
+    put("cost", cost.split(" --mid=")[0])
+    put("system", prompt_line(row["system"]))
+    attached = [att["path"] for att in (
+        conn.execute("SELECT path FROM attachments WHERE aid = ?", (aid,))
+        .fetchone() for aid in json.loads(row["attachments"] or "[]")) if att]
+    put("attached", ", ".join(attached))
+    put("outputs", ", ".join(o["path"]
+                             for o in json.loads(row["outputs"] or "[]")))
+    put("tools", ", ".join(f"{t['name']} {'ok' if t['ok'] else 'error'}"
+                           for t in json.loads(row["tool_results"] or "[]")))
+    put("prompt", " ".join((row["user"] or "").split()))
+    lines.append("---")
+    lines.append(row["response"] or "")
+    return "\n".join(lines) + "\n"
 
 
 def events(api_base, path, headers, body, stamps):
@@ -262,7 +350,9 @@ def dic(prompt,
                            help="the mime type of the answer") = None,
         cont:         flag(short="-c", long="--continue", action="bool",
                            help="continue this session's last conversation") = False,
-        mid:          flag(long="--mid", help="continue from a message id") = None,
+        mid:          flag(long="--mid", metavar="REF",
+                           help="continue from a message: a mid, its prefix,"
+                                " or a ref like HEAD~3") = None,
         pv_thinking:  flag(action="yes/no",
                            help="meter the reasoning instead of printing it") = None,
         pv_response:  flag(action="yes/no",
@@ -279,6 +369,18 @@ def dic(prompt,
         models_file:  flag(help="a json file of model entries to overlay") = None,
         stats:        flag(action="bool",
                            help="print per-model statistics and exit") = False,
+        log:          flag(action="bool", env=False,
+                           help="list recent messages, newest first, and exit")
+                      = False,
+        show:         flag(metavar="REF", env=False,
+                           help="print one message's details and exit") = None,
+        limit:        flag(metavar="N", type=int, env=False,
+                           help="how many rows --log prints (default 200)") = None,
+        all_:         flag(long="--all", action="bool", env=False,
+                           help="--log every message, not just this session") = False,
+        from_:        flag(long="--from", metavar="REF", env=False,
+                           help="--log from REF instead of the session pointer")
+                      = None,
         t_start=None, env=None, out=None, err=None) -> Reply:
     """Talk to one model once, and record the turn.
 
@@ -325,6 +427,19 @@ def dic(prompt,
         out.write(text)
         out.flush()
         return Reply(text=text)
+    if knobs["log"] or knobs["show"] is not None:
+        # the two commands a completion picker is built from: the list it
+        # reads, and the preview it draws for one row of it
+        if knobs["show"] is not None:
+            text = message_text(conn, resolve_ref(conn, knobs["show"], env))
+        else:
+            mid = (resolve_ref(conn, knobs["from_"], env) if knobs["from_"]
+                   else session_read(env))
+            text = log_table(log_rows(conn, mid, knobs["limit"] or 200,
+                                      knobs["all_"]))
+        out.write(text)
+        out.flush()
+        return Reply(text=text)
 
     # stderr is graded: $DIC_VERBOSITY sets the grade, otherwise 1 on a
     # terminal and 0 on a pipe; -q drops it to 0 and each -v raises it by one
@@ -337,7 +452,8 @@ def dic(prompt,
     if not prompt.strip() and not knobs["attachment"]:
         raise DicError("no prompt")
 
-    prev_mid = knobs["mid"] or (session_read(env) if knobs["cont"] else None)
+    prev_mid = (resolve_ref(conn, knobs["mid"], env) if knobs["mid"]
+                else (session_read(env) if knobs["cont"] else None))
     if knobs["cont"] and not prev_mid:
         # -c with no pointer is an error: never a new conversation, and never
         # somebody else's

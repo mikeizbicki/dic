@@ -13,6 +13,39 @@ alias deepseek='dic -m openrouter+deepseek'
 alias gemini='dic -m openrouter+gemini'
 
 # --- tab completion -----------------------------------------------------
+
+# The message picker: `dic --log`'s rows into fzf, and the mid it returns.
+# fzf draws on the terminal and writes the choice on stdout, so bash is what
+# captures it; --with-nth hides the mid from the display while {1} still
+# hands --show the full value to preview.  Without an fzf the same rows come
+# back as a plain list, one mid per line.
+_dic_mids() {
+  if command -v fzf >/dev/null 2>&1; then
+    dic --log 2>/dev/null | fzf \
+        --height=40% --reverse --no-multi --prompt='mid> ' \
+        --header-lines=1 --with-nth=2.. \
+        --preview 'dic --show {1}' --preview-window=right:60% \
+      | awk 'NF { print $1; exit }'
+  else
+    dic --log 2>/dev/null | tail -n +2 | cut -f1
+  fi
+}
+
+# Fill COMPREPLY with one picked mid, or with the list to pick from.  A $1
+# prefix turns the pick into --mid=REF, which is how -c names a message: -c
+# itself takes no value, so the ref arrives beside it.
+_dic_complete_mid() {
+  local prefix=$1 cur=$2 list
+  list=$(_dic_mids)
+  if [[ -z $list ]]; then
+    COMPREPLY=()
+  elif [[ $list != *$'\n'* ]]; then
+    COMPREPLY=( "$prefix$list" )
+  else
+    COMPREPLY=( $(compgen -W "$list" -- "$cur") )
+  fi
+}
+
 _dic_complete() {
   local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
 
@@ -26,12 +59,22 @@ _dic_complete() {
       compopt -o default 2>/dev/null
       COMPREPLY=( $(compgen -f -- "$cur") )
       return ;;
+    # tab complete a message to continue: -c has no value of its own, so the
+    # pick becomes --mid=REF beside it, while --mid, --show and --from each
+    # take the ref they pick directly
+    -c|--continue)
+      _dic_complete_mid "--mid=" "$cur"
+      return ;;
+    --mid|--show|--from)
+      _dic_complete_mid "" "$cur"
+      return ;;
   esac
 
   if [[ $cur == -* ]]; then
     COMPREPLY=( $(compgen -W "-m --model -s --system -a --attachment \
                               -x --extract -f --force -c --continue \
-                              --mid --cache --tools --path --mime-type \
+                              --mid --show --from --log --limit --all \
+                              --cache --tools --path --mime-type \
                               --pv-thinking --no-pv-thinking --stats" -- "$cur") )
   fi
 }
