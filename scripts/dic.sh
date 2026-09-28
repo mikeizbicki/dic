@@ -12,6 +12,31 @@ alias haiku='dic -m anthropic+haiku'
 alias deepseek='dic -m openrouter+deepseek'
 alias gemini='dic -m openrouter+gemini'
 
+# --- tab completion -----------------------------------------------------
+_dic_complete() {
+  local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
+
+  case $prev in
+    # tab complete model names
+    -m|--model)
+      COMPREPLY=( $(compgen -W "$(dic --models)" -- "$cur") )
+      return ;;
+    # tab complete files
+    -a|--attachment|--path|--models-file)
+      compopt -o default 2>/dev/null
+      COMPREPLY=( $(compgen -f -- "$cur") )
+      return ;;
+  esac
+
+  if [[ $cur == -* ]]; then
+    COMPREPLY=( $(compgen -W "-m --model -s --system -a --attachment \
+                              -x --extract -f --force -c --continue \
+                              --mid --cache --tools --path --mime-type \
+                              --pv-thinking --no-pv-thinking --stats" -- "$cur") )
+  fi
+}
+complete -F _dic_complete dic
+
 # --- prompt-expansion widget --------------------------------------------
 # This widget introduces a new syntax $$(...) for command substitution.
 # When this widget encounters
