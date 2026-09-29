@@ -305,13 +305,20 @@ def label(item):
     return (tail or head).replace("_", "-")
 
 
-def summary(usage, items, mid, stamps, verbosity):
+def summary(usage, items, mid, stamps, verbosity, partial=False):
     """The one-line cost and mid report written to stderr.
 
     `items` is what `price.rate` made of the call: one entry per usage name a
     price rule priced, with the rule that priced it, the quantity, the rate and
     the cost.  Their sum is the only total dic ever prints, and a model with no
     price rules has no items and costs nothing.
+
+    `partial` says the call was cut short -- a ^C, or a stream that failed --
+    before the frame carrying its usage arrived.  Most protocols report their
+    usage once, at the very end of the stream, so a call to one of them that
+    was cut short knows nothing and says so rather than claiming to have been
+    free.  A protocol that reports as it goes, like Anthropic's message_start,
+    is unknown only where it is, and its input dollars are the real ones.
 
     At -v the same line carries the timings of the call and at -vv the
     itemization behind the total, which is what a human wants while an ad-hoc
@@ -327,6 +334,10 @@ def summary(usage, items, mid, stamps, verbosity):
     'cost: $0.0105 (input: $0.0030, output: $0.0075) --mid=01ABC'
     >>> summary({}, [], None, stamps, 1)
     'cost: $0.0000 (input: $0.0000, output: $0.0000)'
+    >>> summary({}, [], None, stamps, 1, partial=True)
+    'cost: unknown (input: unknown, output: unknown)'
+    >>> summary({"in": 1000}, items[:1], None, stamps, 1, partial=True)
+    'cost: $0.0030 (input: $0.0030, output: unknown)'
     >>> summary({"in": 100, "in.cache_read": 900}, items, None, stamps, 1)
     'cost: $0.0105 (input: $0.0030, output: $0.0075) cache-read 90%'
     >>> summary({"out": 800}, [], "01ABC", stamps, 2).split(" | ")[1]
@@ -335,12 +346,17 @@ def summary(usage, items, mid, stamps, verbosity):
     'cost: $0.0105 (in 1000@3, out 500@15)'
     """
     def cost_of(direction):
-        return sum(i["cost"] for i in items if i["key"].split(".")[0] == direction)
+        priced = [i for i in items if i["key"].split(".")[0] == direction]
+        if priced:
+            return f"${sum(i['cost'] for i in priced):.4f}"
+        return "unknown" if partial else "$0.0000"
 
     money = (", ".join(f"{label(i)} {i['qty']}@{i['rate']:g}" for i in items)
              if verbosity >= 2 and items
-             else f"input: ${cost_of('in'):.4f}, output: ${cost_of('out'):.4f}")
-    line = f"cost: ${sum(i['cost'] for i in items):.4f} ({money})"
+             else f"input: {cost_of('in')}, output: {cost_of('out')}")
+    total = (f"${sum(i['cost'] for i in items):.4f}" if items
+             else ("unknown" if partial else "$0.0000"))
+    line = f"cost: {total} ({money})"
     read = usage.get("in.cache_read") or 0
     if read:
         # a hit is the reason to cache at all, so it is on the line everyone

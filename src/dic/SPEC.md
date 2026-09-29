@@ -320,7 +320,10 @@ The messages table has the following columns:
 - `cost`, `cost_items`, `price_hash`: what the call was billed, the per-rule
   breakdown that produced it, and the price table it was read from.  A price
   table lives in a config file, which is edited; a bill is not, so it is
-  *stored* when the call ends and never recomputed.
+  *stored* when the call ends and never recomputed.  A call that never
+  finished -- a ^C, or a stream that failed after its 200 -- is stored with
+  `cost` NULL and not zero, because `--stats` sums that column and a call
+  that was cut short is not a free one.
 - `tokens_input`, `tokens_output`, `tokens_reasoning`: the three counts a price
   is usually quoted in, as `GENERATED` `VIRTUAL` columns over `usage`.  The same
   rule as `time` below: a value that is a function of another value is not

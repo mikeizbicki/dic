@@ -219,7 +219,8 @@ def message_text(conn, mid):
     put("status", row["status"])
     _, _, cost = summary(json.loads(row["usage"] or "{}"),
                          json.loads(row["cost_items"] or "[]"),
-                         None, {}, 1).partition(": ")
+                         None, {}, 1,
+                         partial=row["cost"] is None).partition(": ")
     put("cost", cost.split(" --mid=")[0])
     put("system", prompt_line(row["system"]))
     attached = [att["path"] for att in (
@@ -681,7 +682,8 @@ def dic(prompt,
             json.dumps(outputs), json.dumps(results) if results else None,
             model["model_id"], api_type, status, error,
             json.dumps(usage) if usage else None,
-            cost, json.dumps(items), price.price_hash(model),
+            cost, json.dumps(items) if items is not None else None,
+            price.price_hash(model) if cost is not None else None,
             wire.get("t_start"), wire.get("t_connect"), wire.get("t_request"),
             wire.get("t_headers"), wire.get("t_first"), wire.get("t_last"),
             wire.get("t_done")))
@@ -829,13 +831,17 @@ def dic(prompt,
         usage, cost, items = billing(acc)
         rounds.append((usage, cost, items))
         keep(wire)
+        # a call that was cut short has no bill to store: cost is NULL and not
+        # zero, because --stats sums that column and a cancelled call is not a
+        # free one.  What the provider did report is still in `usage`, and is
+        # what the line below reads.
         insert(index, prev, "".join(chunks), adaptor.finish(acc),
                [{"path": pending, "mime_type": mime}] if pending else [],
-               results, usage, cost, items, -1, "cancelled", wire)
+               results, usage, None, None, -1, "cancelled", wire)
         conn.commit()
         usage, items = price.merged(rounds)
         report(verbosity, 1,
-               summary(usage, items, None, stamps, verbosity),
+               summary(usage, items, None, stamps, verbosity, partial=True),
                err=err, env=env)
         if pending:
             report(verbosity, 1, f"partial output left at {pending}",
@@ -856,7 +862,7 @@ def dic(prompt,
         keep(wire)
         insert(index, prev, "".join(chunks), adaptor.finish(acc),
                [{"path": pending, "mime_type": mime}] if pending else [],
-               results, usage, cost, items, stamps.get("status") or -1, str(e),
+               results, usage, None, None, stamps.get("status") or -1, str(e),
                wire)
         conn.commit()
         raise
@@ -878,8 +884,12 @@ def dic(prompt,
     if clipboard:
         osc52(text, out)
 
+    # a stream that failed after its 200 has no bill either: a row is written
+    # with one only when the call actually ended
+    billed = wire["status"] == 200
     mid = insert(index, prev, "".join(chunks), raw, outputs, results,
-                 usage, cost, items, wire["status"], wire.get("error"), wire)
+                 usage, cost if billed else None, items if billed else None,
+                 wire["status"], wire.get("error"), wire)
     conn.commit()
     conn.close()
     # a failed attempt is recorded for the error rate but the session pointer
