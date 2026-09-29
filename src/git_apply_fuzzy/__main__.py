@@ -33,9 +33,18 @@ import argparse, difflib, os, re, subprocess, sys
 HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 DIFF_RE = re.compile(r"^diff --git ")
 
+# Set by --quiet; note() respects it, error() does not.
+QUIET = False
+
 
 def note(message):
-    """One diagnostic line on stderr; git apply is silent, this is not."""
+    """One informational line on stderr; --quiet silences it."""
+    if not QUIET:
+        sys.stderr.write(message + "\n")
+
+
+def error(message):
+    """An error line on stderr; --quiet never silences it."""
     sys.stderr.write(message + "\n")
 
 
@@ -48,7 +57,7 @@ def stage(path):
     result = subprocess.run(["git", "add", "-A", "--", path],
                             capture_output=True, text=True)
     if result.returncode != 0:
-        note(f"{path}: git add failed: {result.stderr.strip()}")
+        error(f"{path}: git add failed: {result.stderr.strip()}")
         return False
     return True
 
@@ -227,6 +236,8 @@ def apply_hunks(lines, hunks, threshold):
 
 
 def main():
+    global QUIET
+
     parser = argparse.ArgumentParser(
         prog="fuzzy-apply",
         description="Apply a unified diff, matching context fuzzily.")
@@ -243,13 +254,17 @@ def main():
                         help="write the hunks that applied even if others did not")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="report every hunk's match ratio")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                        help="suppress informational messages on stderr")
     args = parser.parse_args()
+
+    QUIET = args.quiet
 
     try:
         with open(args.patch) as handle:
             text = handle.read()
-    except OSError as error:
-        sys.exit(f"fuzzy-apply: {args.patch}: {error}")
+    except OSError as err:
+        sys.exit(f"fuzzy-apply: {args.patch}: {err}")
 
     files = parse(text)
     if not files:
@@ -277,8 +292,8 @@ def main():
         try:
             with open(path) as handle:
                 lines = handle.readlines()
-        except OSError as error:
-            note(f"{path}: {error}")
+        except OSError as err:
+            error(f"{path}: {err}")
             failed = True
             continue
 
@@ -287,12 +302,12 @@ def main():
             for index, line, ratio in matches:
                 note(f"  hunk {index}: matched at line {line} (ratio {ratio:.2f})")
         for index, line in failures:
-            note(f"  hunk {index}: no match at or above {args.threshold:.2f}"
-                 f" near line {line}")
+            error(f"  hunk {index}: no match at or above {args.threshold:.2f}"
+                  f" near line {line}")
         if failures:
             failed = True
             if not args.force:
-                note(f"{path}: {len(failures)}/{len(entry['hunks'])} hunks did not match")
+                error(f"{path}: {len(failures)}/{len(entry['hunks'])} hunks did not match")
                 continue
         written.append((path, lines))
         note(f"{path}: {len(matches)}/{len(entry['hunks'])} hunks applied")
@@ -310,16 +325,16 @@ def main():
         try:
             with open(path, "w") as handle:
                 handle.writelines(body)
-        except OSError as error:
-            note(f"{path}: {error}")
+        except OSError as err:
+            error(f"{path}: {err}")
             failed = True
             continue
         applied.append(path)
     for path in deleted:
         try:
             os.remove(path)
-        except OSError as error:
-            note(f"{path}: {error}")
+        except OSError as err:
+            error(f"{path}: {err}")
             failed = True
             continue
         applied.append(path)
@@ -327,8 +342,8 @@ def main():
         try:
             with open(path, "w") as handle:
                 handle.writelines(lines)
-        except OSError as error:
-            note(f"{path}: {error}")
+        except OSError as err:
+            error(f"{path}: {err}")
             failed = True
             continue
         applied.append(path)
