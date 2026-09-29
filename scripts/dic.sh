@@ -19,10 +19,16 @@ alias gemini='dic -m openrouter+gemini'
 # captures it; --with-nth hides the mid from the display while {1} still
 # hands --show the full value to preview.  Without an fzf the same rows come
 # back as a plain list, one mid per line.
+#
+# No --height: an inline picker paints over readline's line and erases it on
+# exit, and readline does not know to repaint, so the half-typed command
+# disappears and a cancelled picker leaves a blank line.  Full-screen fzf
+# uses the terminal's alternate screen instead, which it restores whole, so
+# the line a caller was typing is exactly where it left it.
 _dic_mids() {
   if command -v fzf >/dev/null 2>&1; then
     dic --log 2>/dev/null | fzf \
-        --height=40% --reverse --no-multi --prompt='mid> ' \
+        --reverse --no-multi --prompt='mid> ' \
         --header-lines=1 --with-nth=2.. \
         --preview 'dic --show {1}' --preview-window=right:60% \
       | awk 'NF { print $1; exit }'
