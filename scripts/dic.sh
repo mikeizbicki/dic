@@ -75,7 +75,8 @@ _dic_complete() {
                               -x --extract -f --force -c --continue \
                               --mid --show --from --log --limit --all \
                               --cache --tools --path --mime-type \
-                              --pv-thinking --no-pv-thinking --stats" -- "$cur") )
+                              --pv-thinking --no-pv-thinking \
+                              --clipboard --no-clipboard --stats" -- "$cur") )
   fi
 }
 complete -F _dic_complete dic

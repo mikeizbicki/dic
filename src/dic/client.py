@@ -25,7 +25,7 @@ from dic.options import flag, resolve
 from dic.store import (INSERT, LOG, LOG_ALL, STATS, TOOL_STATS, config_dir, db,
                        history, normalize, resolve_ref, session_read,
                        session_write, store_attachment, turns_from_rows, ulid)
-from dic.tty import (BLUE, RESET, THINKING, DicError, Line, pv_update,
+from dic.tty import (BLUE, RESET, THINKING, DicError, Line, osc52, pv_update,
                      report, summary, use_color)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -357,6 +357,9 @@ def dic(prompt,
                            help="meter the reasoning instead of printing it") = None,
         pv_response:  flag(action="yes/no",
                            help="meter the answer on stderr as well") = None,
+        clipboard:    flag(action="yes/no",
+                           help="copy the answer to the terminal's clipboard"
+                                " (the default on a terminal)") = None,
         verbosity:    flag(short="-v", action="count", env=False,
                            help="raise stderr verbosity; repeatable"
                                 " (DIC_VERBOSITY sets the base)") = None,
@@ -645,6 +648,12 @@ def dic(prompt,
         return mid
 
     paint = use_color(out, env) and knobs["path"] is None
+    # the answer is blue on a terminal, so it is also one escape sequence away
+    # from that terminal's clipboard: OSC 52, which the emulator performs
+    # itself and which needs no subprocess and no clipboard protocol.  The rule
+    # is the paint rule -- a pipe, a --path and a NO_COLOR each give nothing --
+    # and --clipboard/--no-clipboard force it either way.
+    clipboard = paint if knobs["clipboard"] is None else knobs["clipboard"]
 
     acc, chunks, wire, asked, results = {}, [], {}, (), []
     printed, rounds, prev, index, seen = [], [], prev_mid, 0, 0
@@ -826,6 +835,8 @@ def dic(prompt,
             text += "\n"
     paths = sink.close()
     outputs = [{"path": p, "mime_type": mime} for p in paths[seen:]]
+    if clipboard:
+        osc52(text, out)
 
     mid = insert(index, prev, "".join(chunks), raw, outputs, results,
                  usage, cost, items, wire["status"], wire.get("error"), wire)

@@ -59,6 +59,7 @@ Whenever possible, names and semantics remain the same as simonw's `llm`.
 |            | `--no-pv-thinking` | stream the reasoning text itself instead |
 |            | `--pv-response` | meter the answer on stderr too; the default when stdout is not a terminal |
 |            | `--no-pv-response` | do not meter the answer |
+|            | `--clipboard`  | copy the answer to the terminal's clipboard (the default on a terminal) |
 |            | `--tools`      | offer an importable python function as a tool; repeatable |
 |            | `--aliases`    | print shell alias definitions for `dic.sh` to eval |
 |            | `--models`     | list the configured model ids |
@@ -172,6 +173,26 @@ Color is emitted when `$DIC_COLOR` is `always`,
 suppressed when it is `never`,
 and otherwise used only when the stream is a terminal and `$NO_COLOR` is unset,
 so a pipe gets clean text without the caller having to ask.
+
+### Clipboard
+
+The answer is also put in the terminal's clipboard whenever it is printed to
+one -- the same condition as colour, because it is the same stream: a terminal
+is where the answer is already on the screen, and reaching for the mouse to
+select it is the step this deletes.
+
+The mechanism is OSC 52, one escape sequence carrying the answer base64
+encoded, and the *terminal emulator* is what performs the copy.  `dic`
+therefore needs no subprocess (`xclip`, `pbcopy`), no library, and no idea
+whether the session is X11, Wayland, macOS or an ssh connection; a terminal
+that does not implement the sequence ignores the bytes, which is the right
+failure, because the answer is still on the screen and nothing has broken.
+The sequence is written to the same stream the blue answer went to, and only
+after the answer is complete, so nothing is ever copied half-written and a
+pipe is never handed an escape it did not ask for.
+
+`--clipboard` and `--no-clipboard` force it either way, and `$DIC_CLIPBOARD`
+sets the default for a user who wants it off everywhere.
 
 ### Progress meters
 

@@ -8,7 +8,7 @@ network, so importing it costs one file of pure stdlib.
 
 See SPEC.md, "Color", "Progress meters" and "Verbosity".
 """
-import os, sys, time
+import base64, os, sys, time
 
 BLUE = "\033[38;5;39m"       # model output
 ORANGE = "\033[38;5;208m"    # the cost summary
@@ -69,6 +69,34 @@ def report(verbosity, level, msg, err=None, env=None):
     line = f"{msg}\n"
     err.write(ORANGE + line + RESET if use_color(err, env) else line)
     err.flush()
+
+
+def osc52(text, out=None):
+    """Copy text to the terminal's own clipboard with one OSC 52 sequence.
+
+    The terminal emulator is what performs the copy, so dic needs no
+    subprocess (`xclip`, `pbcopy`), no library and no idea whether the
+    session is X11, Wayland, macOS or an ssh connection.  A terminal that
+    does not implement the sequence ignores the bytes, which is the right
+    failure: the answer is still on the screen and nothing has broken.  The
+    payload is base64 and carries no newline, so the sequence is one line,
+    and it is written to the stream the answer went to, after the answer is
+    complete and never before it.
+
+    >>> import io
+    >>> buf = io.StringIO()
+    >>> osc52("hi", buf)
+    >>> buf.getvalue()
+    '\\x1b]52;c;aGk=\\x07'
+    >>> osc52("", buf)          # nothing to copy, nothing written
+    >>> buf.getvalue()
+    '\\x1b]52;c;aGk=\\x07'
+    """
+    if not text:
+        return
+    out = sys.stdout if out is None else out
+    out.write("\033]52;c;" + base64.b64encode(text.encode()).decode() + "\a")
+    out.flush()
 
 
 def pv_bytes(n):
