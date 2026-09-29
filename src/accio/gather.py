@@ -115,9 +115,15 @@ def ancestor_dirs(path):
     while True:
         seen.append(directory)
         parent = os.path.dirname(directory)
-        if not parent or parent == directory:
-            return list(reversed(seen))
-        directory = parent
+        if parent == directory:       # "/" is its own parent: the root
+            break
+        if parent:
+            directory = parent
+        elif directory != ".":        # a relative top: the walk ends at "."
+            directory = "."
+        else:
+            break
+    return list(reversed(seen))
 
 
 def ancestors(path, readmes=DEFAULT_READMES):
