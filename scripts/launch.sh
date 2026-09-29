@@ -15,9 +15,9 @@
 #
 # The window is given a background shifted away from the terminal's own, so
 # a window this opened is visible at a glance and a command cannot mistake
-# it for one the user opened.  The color is read from the terminal the
-# command runs in and never from the parent's, which is what keeps the two
-# windows independent.
+# it for one the user opened.  The color is read here, from the tty launch
+# runs in, and handed to the terminal as an option; no shell runs in the
+# new window to paint it, so the command is the window's one process.
 #
 # Sourcing this file defines the functions and does nothing else.
 
@@ -31,7 +31,6 @@ is an error: running the command where the shell stands looks the same as a
 window and is worse than saying so.  LAUNCH_INPLACE=1 asks for it anyway.
 
 flags:
-  --banner TEXT   print TEXT between ruled lines before CMD runs.
   --title TEXT    the new window's title.
   -h, --help      show this help.
 
@@ -39,14 +38,6 @@ The first `--` ends launch's flags; otherwise the first argument that is
 not one starts the command, and everything from there on goes to CMD
 unchanged.
 EOF
-}
-
-# A banner: the text between two rules as wide as the window.
-launch-banner() {
-    local text=$1 width=${COLUMNS:-80} rule
-    printf -v rule '%*s' "$width" ''
-    rule=${rule// /=}
-    printf '%s\n%s\n%s\n' "$rule" "$text" "$rule"
 }
 
 # The terminal's own background, as #rrggbb, asked of it with the OSC 11
@@ -70,8 +61,10 @@ launch-read-bg() {
 # Shift a #rrggbb color away from its own luminance, so a light theme gets
 # a shade darker than white and a dark one a shade lighter than black.  It
 # is a shift and not a scale, because a scale leaves white at white: the
-# point is a background that is plainly this window's own.
-launch-tint() {
+# point is a background that is plainly this window's own.  The result is
+# another #rrggbb, for a terminal option that takes a color; nothing is
+# written to a tty, because no shell runs in the new window to write it.
+launch-tinted-hex() {
     local hex=${1#\#} r g b lum step c
     r=$((16#${hex:0:2})); g=$((16#${hex:2:2})); b=$((16#${hex:4:2}))
     lum=$(( (2126*r + 7152*g + 722*b) / 10000 ))
@@ -79,20 +72,7 @@ launch-tint() {
     c=$((r + step)); (( c < 0 )) && c=0; (( c > 255 )) && c=255; r=$c
     c=$((g + step)); (( c < 0 )) && c=0; (( c > 255 )) && c=255; g=$c
     c=$((b + step)); (( c < 0 )) && c=0; (( c > 255 )) && c=255; b=$c
-    printf '\033]11;#%02x%02x%02x\033\\' "$r" "$g" "$b"
-}
-
-# Everything the new window does to look like a window `launch` opened: its
-# title and its background, and nothing the command can see.  A title is an
-# escape the window writes to itself, so there is no terminal-specific
-# option to get wrong.  It writes to /dev/tty, so a command whose output is
-# redirected still gets a decorated window.
-launch-decorate() {
-    local title=$1 bg
-    [[ -n $title ]] && printf '\033]2;%s\033\\' "$title" >/dev/tty
-    if bg=$(launch-read-bg); then
-        launch-tint "$bg" >/dev/tty
-    fi
+    printf '#%02x%02x%02x' "$r" "$g" "$b"
 }
 
 # The terminal this shell runs under, as $TERM names it.  $TERM is the
@@ -142,12 +122,11 @@ launch-env() {
 }
 
 function launch() {
-    local banner= title=
+    local title=
     local -a cmd=()
     while (( $# )); do
         case $1 in
             -h|--help) launch-usage; return 0 ;;
-            --banner)  banner=$2; shift 2 ;;
             --title)   title=$2; shift 2 ;;
             --)        shift; cmd=("$@"); break ;;
             *)         cmd=("$@"); break ;;
@@ -175,33 +154,15 @@ function launch() {
         return
     fi
 
-    # What the new window runs: the decoration, the banner, and then the
-    # command.  It is one line for one shell, so every word is quoted for
-    # that shell; the command is a word like any other and needs no special
-    # case.
-    #
-    # The helpers are written into the line as definitions and not called
-    # by name, because the shell that reads the line is a fresh one that
-    # has not sourced this file: it knows the interactive rc and nothing
-    # else, so a bare `launch-decorate` is a command it does not have.
-    # Sending the definitions along makes the line stand alone however the
-    # new shell was started.
-    local line
-    line=$(declare -f launch-decorate launch-read-bg launch-tint launch-banner)
-    line+=$'\n'"launch-decorate $(printf %q "$title")"
-    [[ -n $banner ]] && line+=$'\n'"launch-banner $(printf %q "$banner")"
-
-    # `exec` so that the window runs the command itself and not the command
-    # inside a second shell.  Without it the line ends in a shell, the
-    # shell is interactive because the outer one was started with -i, and
-    # `exit` at the prompt returns to the outer shell instead of ending the
-    # window -- and an interactive shell on a tty that its predecessor is
-    # still attached to prints "no job control in background".
-    line+=$'\n''exec'
-    local word
-    for word in "${cmd[@]}"; do
-        line+=" $(printf %q "$word")"
-    done
+    # The tinted background and the title are terminal options, applied to
+    # the window itself.  Nothing is written to the new window's tty and no
+    # shell is started in it, so the command launch was given is the
+    # window's one process: `launch bash` is one bash, and `launch echo` is
+    # an echo that exits and leaves nothing running behind it.  The color
+    # is read from this shell's tty, the same terminal the new window draws
+    # on when it is the same emulator.
+    local bg hex=
+    bg=$(launch-read-bg) && hex=$(launch-tinted-hex "$bg")
 
     # This shell's environment, put back in the new one.  A terminal
     # launches its children with the environment of the process that
@@ -223,26 +184,32 @@ function launch() {
             # The binary and not the socket.  --detach forks from this
             # shell, so the window inherits its directory, its environment
             # and its file descriptors with nothing passed and nothing
-            # listening; --hold so the window survives the command.
+            # listening; --hold so the window survives the command.  -o is
+            # a config override for this kitty instance alone, so the tint
+            # touches the new window and not the one launch ran in.
             # NOTE: with no socket there is no instance to join, so this is
             # a kitty of its own and not a window in the one the shell is
             # in; see the note on launch-backend.
             # TODO: drop --hold and let the window close itself once the
             # run is over; it is held open for now because a window that
             # stays is the only place to read a run while this is new.
-            kitty --detach --hold --title "$title" \
-                bash -c "$line"
+            local -a opts=(--detach --hold --title "$title")
+            [[ -n $hex ]] && opts+=(-o "background=$hex")
+            kitty "${opts[@]}" -- "${cmd[@]}"
             ;;
         tmux)
             # -c for the directory and -e for the environment, because a
             # tmux server has both of its own and neither is this shell's.
             # -P -F names the window that was made, so that it can be told
             # to stay after the command ends, which is what --hold is for
-            # kitty.
+            # kitty.  The tint is a window option and the title a pane's.
             local id
             id=$(tmux new-window -P -F '#{window_id}' -c "$PWD" "${env_args[@]}" \
-                     -- bash -c "$line") || return
+                     -- "${cmd[@]}") || return
             tmux set-option -w -t "$id" remain-on-exit on
+            [[ -n $title ]] && tmux select-pane -t "$id" -T "$title"
+            [[ -n $hex ]] && tmux set-option -w -t "$id" \
+                                window-active-style "bg=$hex"
             ;;
     esac
 }
