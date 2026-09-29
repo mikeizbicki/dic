@@ -11,23 +11,39 @@ function committe() {
     # 2 the model asked a question instead of making a change
     #   (no diff provided)
 
-    # only allow committe to run if the repo is clean
-    if ! git rev-parse --git-dir >/dev/null 2>&1; then
-        echo "committe-error: not inside a git repository" >&2
-        return 1
-    fi
-    if ! git diff --quiet --cached; then
-        echo "committe-error: staging area is non-empty" >&2
-        return 1
-    fi
-    if ! git diff --quiet; then
-        echo "committe-error: working tree has uncommitted changes" >&2
-        return 1
+    # committe's own flags are parsed first; the first `--` ends them and
+    # everything after is passed to the model command.  A flag committe does
+    # not know is passed through too, so a new dic/llm flag works unedited.
+    local force=0 retries="${COMMITTE_RETRIES:-1}"
+    local -a llm_args=()
+    while (( $# )); do
+        case "$1" in
+            -f|--force) force=1; shift ;;
+            --retries)  retries=$2; shift 2 ;;
+            --)         shift; llm_args+=("$@"); break ;;
+            *)          llm_args+=("$1"); shift ;;
+        esac
+    done
+
+    # only allow committe to run if the repo is clean, unless -f was given
+    if (( ! force )); then
+        if ! git rev-parse --git-dir >/dev/null 2>&1; then
+            echo "committe-error: not inside a git repository" >&2
+            return 1
+        fi
+        if ! git diff --quiet --cached; then
+            echo "committe-error: staging area is non-empty" >&2
+            return 1
+        fi
+        if ! git diff --quiet; then
+            echo "committe-error: working tree has uncommitted changes" >&2
+            return 1
+        fi
     fi
 
     # generate and apply the patch
-    committe-mkpatch "$@" || return $?
-    committe-apply
+    committe-mkpatch "$retries" "${llm_args[@]}" || return $?
+    committe-apply "$retries"
 }
 
 function committe-patchfile() {
@@ -45,6 +61,9 @@ function committe-message() {
 }
 
 function committe-mkpatch() {
+    # The first argument is the retry budget; the rest go to the model.
+    local retries=$1; shift
+
     # `dic` is a more efficient version of simonw's `llm` command;
     # if available, we use `dic`; otherwise we use `llm`.
     if command -v dic >/dev/null 2>&1; then
@@ -58,10 +77,15 @@ function committe-mkpatch() {
 
     # We pass the user's request as positional args to llm_command.
     # Use a subshell so `set -o pipefail` doesn't leak into the caller's shell.
-    if ! $llm_command -s "$(committe-prompt)" "$@" > "$(committe-patchfile)"; then
-        echo "committe-error: $llm_command failed" >&2
-        return 1
-    fi
+    local i
+    for (( i = 0; i <= retries; i++ )); do
+        if $llm_command -s "$(committe-prompt)" "$@" > "$(committe-patchfile)"; then
+            return 0
+        fi
+        (( i < retries )) && echo "committe-warning: $llm_command failed, retrying" >&2
+    done
+    echo "committe-error: $llm_command failed" >&2
+    return 1
 }
 
 function committe-apply() {
@@ -81,18 +105,25 @@ function committe-apply() {
     # so the commit message above the patch is skipped over.
     # Finally, it either fully succeeds or leaves the tree untouched.
     # So on error, the repo remains exactly as if nothing had happened.
-    if ! git apply --quiet --index --recount --ignore-whitespace "$patch_file" 2>/dev/null; then
+    local i
+    for (( i = 0; i <= retries; i++ )); do
+        git apply --quiet --index --recount --ignore-whitespace "$patch_file" 2>/dev/null \
+            && break
+
         # `git apply` needs every context line to match exactly, which the
         # model does not always manage; `git-apply-fuzzy` retries the patch
         # and tolerates small mismatches in the context lines.
         echo "committe-warning: git apply failed, retrying with git-apply-fuzzy" >&2
-        if ! git-apply-fuzzy -q "$patch_file" "$@"; then
+        git-apply-fuzzy -q "$patch_file" "$@" && break
+
+        if (( i >= retries )); then
             echo "committe-error: git apply and git-apply-fuzzy both failed" >&2
             echo "committe-hint: fix the raw patch at: $patch_file" >&2
             echo "committe-hint: after fixing, rerun committe-apply" >&2
             return 1
         fi
-    fi
+        echo "committe-warning: retrying patch ($((i + 1))/$retries)" >&2
+    done
 
     # `git apply` staged the changes, so no separate `git add` is required.
     # We tag the commits by modifying the subject with [geni]
