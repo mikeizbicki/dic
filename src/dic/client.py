@@ -123,6 +123,48 @@ def prompt_line(text, width=60):
     return line if len(line) <= width else line[:width - 1] + "…"
 
 
+def truncate(text, width):
+    """text shortened to width columns, with an ellipsis when it is longer.
+
+    >>> truncate("groq+qwen", 20)
+    'groq+qwen'
+    >>> truncate("openrouter+deepseek", 10)
+    'openroute…'
+    """
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def ago(ns, now=None):
+    """A past instant as GitHub-style elapsed time: 20s, 5m, 1hr.
+
+    A log row is read to find the turn to continue, and "twenty minutes
+    ago" locates one where a wall clock does not.
+
+    >>> ago(0, now=20 * 10**9)
+    '20s ago'
+    >>> ago(0, now=5 * 60 * 10**9)
+    '5m ago'
+    >>> ago(0, now=3600 * 10**9)
+    '1hr ago'
+    >>> ago(0, now=3 * 86400 * 10**9)
+    '3d ago'
+    >>> ago(0, now=40 * 86400 * 10**9)
+    '1mo ago'
+    """
+    seconds = max(0, ((time.time_ns() if now is None else now) - ns) // 10**9)
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}hr ago"
+    if seconds < 30 * 86400:
+        return f"{seconds // 86400}d ago"
+    if seconds < 365 * 86400:
+        return f"{seconds // (30 * 86400)}mo ago"
+    return f"{seconds // (365 * 86400)}y ago"
+
+
 def log_rows(conn, mid, limit, everything=False):
     """The rows --log prints: every message, or the chain above mid.
 
@@ -143,16 +185,14 @@ def log_table(rows):
     with --header-lines=1 and reads column one of every other line as a mid.
 
     >>> log_table([])
-    'mid\\twhen\\tmodel\\tcost\\tprompt\\n'
+    'mid\twhen\tmodel\ttokens\tprompt\n'
     """
-    lines = ["\t".join(("mid", "when", "model", "cost", "prompt"))]
+    lines = ["\t".join(("mid", "when", "model", "tokens", "prompt"))]
     for row in rows:
-        when = (time.strftime("%Y-%m-%d %H:%M",
-                              time.localtime(row["t_start"] / 1e9))
-                if row["t_start"] else "")
-        cost = "" if row["cost"] is None else f"${row['cost']:.4f}"
-        lines.append("\t".join((row["mid"], when, row["model_id"] or "",
-                                cost, prompt_line(row["user"]))))
+        lines.append("\t".join((row["mid"], ago(row["t_start"]),
+                                truncate(row["model_id"] or "", 20),
+                                str(row["tokens"] or 0),
+                                prompt_line(row["user"]))))
     return "".join(line + "\n" for line in lines)
 
 

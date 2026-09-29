@@ -163,18 +163,20 @@ SELECT model_id, json_extract(value, '$.name') AS tool,
 # the order `git log` uses, so fzf reads top-down.  The mid is column one, so
 # the picker hides it with --with-nth=2.. and still hands {1} to --show.
 LOG = """
-WITH RECURSIVE chain(mid, prev_mid, model_id, cost, user, t_start, status) AS (
-    SELECT mid, prev_mid, model_id, cost, user, t_start, status
+WITH RECURSIVE chain(mid, prev_mid, model_id, usage, user, t_start, status) AS (
+    SELECT mid, prev_mid, model_id, usage, user, t_start, status
       FROM messages WHERE mid = ?
   UNION ALL
-    SELECT m.mid, m.prev_mid, m.model_id, m.cost, m.user, m.t_start, m.status
+    SELECT m.mid, m.prev_mid, m.model_id, m.usage, m.user, m.t_start, m.status
       FROM messages m JOIN chain c ON m.mid = c.prev_mid)
-SELECT mid, t_start, model_id, cost, user, status
+SELECT mid, t_start, model_id, user, status,
+       coalesce((SELECT sum(value) FROM json_each(usage)), 0) AS tokens
   FROM chain ORDER BY t_start DESC LIMIT ?
 """
 
 LOG_ALL = """
-SELECT mid, t_start, model_id, cost, user, status
+SELECT mid, t_start, model_id, user, status,
+       coalesce((SELECT sum(value) FROM json_each(usage)), 0) AS tokens
   FROM messages ORDER BY t_start DESC LIMIT ?
 """
 
