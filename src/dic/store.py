@@ -164,6 +164,7 @@ SELECT model_id, json_extract(value, '$.name') AS tool,
 # What `dic --log` prints into a completion picker: one row per message, in
 # the order `git log` uses, so fzf reads top-down.  The mid is column one, so
 # the picker hides it with --with-nth=2.. and still hands {1} to --show.
+# prev_mid comes with each row, because --graph draws the forest from it.
 LOG = """
 WITH RECURSIVE chain(mid, prev_mid, model_id, usage, user, t_start, status) AS (
     SELECT mid, prev_mid, model_id, usage, user, t_start, status
@@ -171,15 +172,26 @@ WITH RECURSIVE chain(mid, prev_mid, model_id, usage, user, t_start, status) AS (
   UNION ALL
     SELECT m.mid, m.prev_mid, m.model_id, m.usage, m.user, m.t_start, m.status
       FROM messages m JOIN chain c ON m.mid = c.prev_mid)
-SELECT mid, t_start, model_id, user, status,
+SELECT mid, prev_mid, t_start, model_id, user, status,
        coalesce((SELECT sum(value) FROM json_each(usage)), 0) AS tokens
   FROM chain ORDER BY t_start DESC LIMIT ?
 """
 
 LOG_ALL = """
-SELECT mid, t_start, model_id, user, status,
+SELECT mid, prev_mid, t_start, model_id, user, status,
        coalesce((SELECT sum(value) FROM json_each(usage)), 0) AS tokens
   FROM messages ORDER BY t_start DESC LIMIT ?
+"""
+
+# Every message written under a session and its sub-sessions: the same subtree
+# --cost-session sums.  A harness that runs its children under
+# DIC_SESSION=parent/scruta-N therefore lists one run here, and not only the
+# one conversation its pointer holds.
+LOG_SESSION = """
+SELECT mid, prev_mid, t_start, model_id, user, status,
+       coalesce((SELECT sum(value) FROM json_each(usage)), 0) AS tokens
+  FROM messages WHERE session = ? OR session LIKE ? || '/%'
+ ORDER BY t_start DESC LIMIT ?
 """
 
 B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"

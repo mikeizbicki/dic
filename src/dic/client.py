@@ -23,9 +23,9 @@ import http.client, json, os, re, sys, time, urllib.parse
 from dic import config, output, price
 from dic.options import flag, resolve
 from dic.store import (CONVERSATION_COST, COST_TREE, INSERT, LOG, LOG_ALL,
-                       SESSION_COST, STATS, TOOL_STATS, config_dir, db, history,
-                       normalize, resolve_ref, session_read, session_write,
-                       store_attachment, turns_from_rows, ulid)
+                       LOG_SESSION, SESSION_COST, STATS, TOOL_STATS, config_dir,
+                       db, history, normalize, resolve_ref, session_read,
+                       session_write, store_attachment, turns_from_rows, ulid)
 from dic.tty import (BLUE, RESET, THINKING, DicError, Line, osc52, pv_update,
                      report, summary, use_color)
 
@@ -197,12 +197,17 @@ def ago(ns, now=None):
     return f"{seconds // (365 * 86400)}y ago"
 
 
-def log_rows(conn, mid, limit, everything=False):
-    """The rows --log prints: every message, or the chain above mid.
+def log_rows(conn, mid, limit, everything=False, session=None):
+    """The rows --log prints: a session's subtree, all of them, or a chain.
 
-    A session's chain is walked the same way history() walks it, so a tool
-    loop's rounds all appear and the picker shows the tree -c would resume.
+    A chain is walked the same way history() walks it, so a tool loop's rounds
+    all appear and the picker shows the tree -c would resume.  A session is a
+    name and its sub-sessions, which is the subtree --cost-session sums, so a
+    harness that runs children under DIC_SESSION=parent/scruta-N lists one run
+    in one place.
     """
+    if session is not None:
+        return conn.execute(LOG_SESSION, (session, session, limit)).fetchall()
     if everything:
         return conn.execute(LOG_ALL, (limit,)).fetchall()
     if not mid:
@@ -210,21 +215,89 @@ def log_rows(conn, mid, limit, everything=False):
     return conn.execute(LOG, (mid, limit)).fetchall()
 
 
-def log_table(rows):
+def graph_prefixes(rows):
+    r"""The graph column of --log's rows: the forest, one line at a time.
+
+    Each entry is (prefix, row): `row` is None for the line a merge draws on
+    its own, the `|/` git prints, and otherwise the row itself, with the
+    drawing up to its `*` as the prefix.
+
+    A column is a conversation still being walked: it holds the mid its next
+    row must be.  A row no column waits for is a tip, and it takes the
+    leftmost free column, so a forest packs leftward instead of keeping a
+    column for every branch that ever existed.  A row several columns wait
+    for is where conversations meet: they merge into the leftmost of them,
+    and that merge gets a line of its own, because the columns it absorbs
+    are gone by the time the row itself is drawn.
+
+    >>> rows = [{"mid": "A", "prev_mid": "B"},
+    ...         {"mid": "C", "prev_mid": "D"},
+    ...         {"mid": "D", "prev_mid": "B"},
+    ...         {"mid": "B", "prev_mid": None}]
+    >>> [(p, "-" if r is None else r["mid"]) for p, r in graph_prefixes(rows)]
+    [('*', 'A'), ('| *', 'C'), ('| *', 'D'), ('| /', '-'), ('*', 'B')]
+    >>> [p for p, _ in graph_prefixes(
+    ...     [{"mid": "a", "prev_mid": None}, {"mid": "b", "prev_mid": None}])]
+    ['*', '*']
+    """
+    columns = []                    # the mid each column waits to see next
+    out = []
+
+    def draw(star=None, slash=()):
+        """One line: `*` at star, `/` at slash, `|` where a column is live."""
+        return "".join(
+            "* " if i == star else
+            "/ " if i in slash else
+            ("| " if column is not None else "  ")
+            for i, column in enumerate(columns)).rstrip()
+
+    for row in rows:
+        waiting = [i for i, column in enumerate(columns)
+                   if column == row["mid"]]
+        if waiting:
+            primary = waiting[0]
+        else:
+            primary = columns.index(None) if None in columns else len(columns)
+            if primary == len(columns):
+                columns.append(row["mid"])
+            else:
+                columns[primary] = row["mid"]
+            waiting = [primary]
+        if len(waiting) > 1:
+            out.append((draw(slash=waiting[1:]), None))
+            for i in sorted(waiting[1:], reverse=True):
+                del columns[i]
+        out.append((draw(star=primary), row))
+        columns[primary] = row["prev_mid"]
+        while columns and columns[-1] is None:
+            columns.pop()
+    return out
+
+
+def log_table(rows, graph=False):
     r"""Rows of --log as one tab-separated table: mid first, prompt last.
 
     The header is a row of its own, as --stats's is, so a picker skips it
     with --header-lines=1 and reads column one of every other line as a mid.
+    With `graph`, column two is the forest, and the lines a merge draws carry
+    no mid: they are a drawing and not a message.
 
     >>> log_table([])
     'mid\twhen\tmodel\ttokens\tprompt\n'
+    >>> log_table([], graph=True)
+    'mid\tgraph\twhen\tmodel\ttokens\tprompt\n'
     """
-    lines = ["\t".join(("mid", "when", "model", "tokens", "prompt"))]
-    for row in rows:
-        lines.append("\t".join((row["mid"], ago(row["t_start"]),
-                                truncate(row["model_id"] or "", 20),
-                                str(row["tokens"] or 0),
-                                prompt_line(row["user"]))))
+    header = ["mid"] + (["graph"] if graph else []) + [
+        "when", "model", "tokens", "prompt"]
+    lines = ["\t".join(header)]
+    for prefix, row in (graph_prefixes(rows) if graph
+                        else [(None, row) for row in rows]):
+        if row is None:             # a merge line: a graph and nothing else
+            lines.append("\t".join(["", prefix] + [""] * (len(header) - 2)))
+            continue
+        lines.append("\t".join([row["mid"]] + ([prefix] if graph else []) + [
+            ago(row["t_start"]), truncate(row["model_id"] or "", 20),
+            str(row["tokens"] or 0), prompt_line(row["user"])]))
     return "".join(line + "\n" for line in lines)
 
 
@@ -459,6 +532,13 @@ def dic(prompt,
         log:          flag(action="bool", env=False,
                            help="list recent messages, newest first, and exit")
                       = False,
+        graph:        flag(long="--graph", action="bool", env=False,
+                           help="draw --log's forest in a column of its own")
+                      = False,
+        log_session:  flag(long="--session", metavar="NAME", action="?",
+                           env=False,
+                           help="--log a session and its sub-sessions"
+                                " (default: $DIC_SESSION)") = None,
         show:         flag(metavar="REF", env=False,
                            help="print one message's details and exit") = None,
         limit:        flag(metavar="N", type=int, env=False,
@@ -547,8 +627,15 @@ def dic(prompt,
         else:
             mid = (resolve_ref(conn, knobs["from_"], env) if knobs["from_"]
                    else session_read(env))
+            # --session scopes the listing to one session and its children:
+            # the same subtree --cost-session sums, and --all scopes it to
+            # the whole database; a bare --session is this shell's own
+            scope = knobs["log_session"]
+            if scope == "":
+                scope = session
             text = log_table(log_rows(conn, mid, knobs["limit"] or 200,
-                                      knobs["all_"]))
+                                      knobs["all_"], scope),
+                             graph=knobs["graph"])
         out.write(text)
         out.flush()
         return Reply(text=text)

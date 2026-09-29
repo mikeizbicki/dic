@@ -14,6 +14,25 @@ alias gemini='dic -m openrouter+gemini'
 
 # --- tab completion -----------------------------------------------------
 
+# What the picker lists, and so what a mid after -c may be completed to.
+# DIC_LOG_SCOPE says how much of the message tree to offer:
+#
+#   all      every conversation in the database (the default)
+#   session  every conversation written under $DIC_SESSION, children included
+#   chain    this session's current conversation, and nothing else
+#
+# `all` and `session` are what the graph is for: the rows of several
+# conversations at once only mean something with the forest drawn beside
+# them, so those two scopes turn --graph on and `chain` does not.
+_dic_log_flags() {
+  case ${DIC_LOG_SCOPE:-all} in
+    all)     printf '%s\n' --graph --all ;;
+    session) printf '%s\n' --graph --session ;;
+    chain)   : ;;
+    *)       printf 'dic.sh: bad DIC_LOG_SCOPE: %s\n' "$DIC_LOG_SCOPE" >&2 ;;
+  esac
+}
+
 # The message picker: `dic --log`'s rows into fzf, and the mid it returns.
 # fzf draws on the terminal and writes the choice on stdout, so bash is what
 # captures it; --with-nth hides the mid from the display while {1} still
@@ -25,15 +44,27 @@ alias gemini='dic -m openrouter+gemini'
 # disappears and a cancelled picker leaves a blank line.  Full-screen fzf
 # uses the terminal's alternate screen instead, which it restores whole, so
 # the line a caller was typing is exactly where it left it.
+#
+# A line the graph draws for a merge carries no mid, and fzf has no way to
+# say a line cannot be picked, so those lines are filtered out once, before
+# either reader sees them.  --delimiter is a tab and not fzf's whitespace
+# default, because the graph column is made of spaces and would otherwise be
+# split into fields of its own.
 _dic_mids() {
+  local -a flags
+  mapfile -t flags < <(_dic_log_flags)
+  local rows
+  rows=$(dic --log "${flags[@]}" 2>/dev/null \
+         | awk -F'\t' 'NR == 1 || $1 != ""')
+  [[ -z $rows ]] && return
   if command -v fzf >/dev/null 2>&1; then
-    dic --log 2>/dev/null | fzf \
+    printf '%s\n' "$rows" | fzf \
         --reverse --no-multi --prompt='mid> ' \
-        --header-lines=1 --with-nth=2.. \
+        --header-lines=1 --with-nth=2.. --delimiter='\t' \
         --preview 'dic --show {1}' --preview-window=right:60% \
-      | awk 'NF { print $1; exit }'
+      | awk -F'\t' '$1 != "" { print $1; exit }'
   else
-    dic --log 2>/dev/null | tail -n +2 | cut -f1
+    printf '%s\n' "$rows" | tail -n +2 | cut -f1
   fi
 }
 
@@ -80,6 +111,7 @@ _dic_complete() {
     COMPREPLY=( $(compgen -W "-m --model -s --system -a --attachment \
                               -x --extract -f --force -c --continue \
                               --mid --show --from --log --limit --all \
+                              --graph --session \
                               --cache --tools --path --mime-type \
                               --pv-thinking --no-pv-thinking \
                               --clipboard --no-clipboard --stats" -- "$cur") )
