@@ -51,12 +51,12 @@ An absolute path means context from the filesystem root down and a relative path
 
 One format, and it is text:
 
-    ---
     a/b/c.py
     ---
     <contents of c.py>
+    ---
 
-The path is fenced on a line of its own and the text follows it, so a reader -- a model, a human, `less` -- can see where one file stops.  The fence is files-to-prompt's, kept so that a reader that already knows that encoding does not have to learn a second one.  The newline below the text is written and never assumed: a file whose last line has no newline of its own must not run into the next file's fence.
+The path is on a line of its own and the text follows it between `---` fences, so a reader -- a model, a human, `less` -- can see where one file stops.  The format is files-to-prompt's, kept so that a reader that already knows that encoding does not have to learn a second one, and a fence closes every file, so the last line of the run is always `---`.  The newline below the text is written and never assumed: a file whose last line has no newline of its own must not run into the closing fence.
 
 There is no escaping and no quoting.  A file whose content contains a line that is itself a path is ambiguous, and the answer is `--format markdown` or `--format xml` (TODO), not a longer escape.
 

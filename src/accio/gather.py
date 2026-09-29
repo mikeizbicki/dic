@@ -192,26 +192,29 @@ def bundle(paths, readmes=DEFAULT_READMES, patterns=DEFAULT_IGNORES):
 
 
 def render(pairs, out):
-    """Write (path, text) pairs as the one format accio has: fences, path, text.
+    """Write (path, text) pairs as the one format accio has: path, fences, text.
 
-    The path sits between two `---` fences on lines of their own and the
-    text follows, so that a reader -- a model, a human, `less` -- can see
-    where one file stops, and so that the output is the encoding
-    files-to-prompt already produces.  The newline below the text is
-    written and never assumed: a file whose last line has no newline of
-    its own must not run into the next file's fence.
+    The path is on a line of its own, a `---` fence follows it, the text
+    follows that, and a closing `---` follows the text, so that a reader
+    -- a model, a human, `less` -- can see where one file stops, and so
+    that the output is the encoding files-to-prompt already produces.  A
+    fence closes every file, so the last line of the whole run is always
+    `---`.  The newline below the text is written and never assumed: a
+    file whose last line has no newline of its own must not run into the
+    closing fence.
 
     >>> import io
     >>> stream = io.StringIO()
     >>> render([("a.py", "x = 1\\n")], stream)
     >>> stream.getvalue()
-    '---\\na.py\\n---\\nx = 1\\n'
+    'a.py\\n---\\nx = 1\\n---\\n'
     >>> stream = io.StringIO()
     >>> render([("b.txt", "no newline")], stream)
     >>> stream.getvalue()
-    '---\\nb.txt\\n---\\nno newline\\n'
+    'b.txt\\n---\\nno newline\\n---\\n'
     """
     for path, text in pairs:
-        out.write(f"---\n{path}\n---\n{text}")
+        out.write(f"{path}\n---\n{text}")
         if not text.endswith("\n"):
             out.write("\n")
+        out.write("---\n")
