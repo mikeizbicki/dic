@@ -95,16 +95,41 @@ launch-decorate() {
     fi
 }
 
-# The terminal this shell runs under, if it is one `launch` can open a
-# window in.  Each terminal names itself in the environment it hands to its
-# children, so this asks nobody anything and still knows what it is talking
-# to.
+# The terminal this shell runs under, as $TERM names it.  $TERM is the
+# variable every program has: a login sets it and every emulator keeps it,
+# so the emulator names itself here without a socket having to exist,
+# without remote control having to be on, and without this file asking the
+# emulator anything.  A missing binary is enough to know a window cannot
+# open, so the emulator is looked up before it is believed.
+#
+# NOTE: $TERM is the emulator and not the instance.  Two kitty windows in
+# one kitty process, and two kitty processes on one machine, both report
+# xterm-kitty, so this says which program to ask for a window and not which
+# one to ask.  The socket this replaces said which one, and the price of
+# dropping it is a window that may land in a different instance than the
+# shell that asked for it.
+#
+# NOTE: $TERM crosses ssh, a window does not.  A remote shell reports the
+# remote terminal but draws on no display of its own, so nothing it runs
+# can open a local window, and the socket was no more reachable from there.
+# tmux is handled apart for the same reason and not as an exception: tmux
+# is client and server already, so a window in it is an object inside the
+# session and not a window on the local display.
+#
+# TODO: the emulator and the instance are told apart by asking the
+# emulator, which is what remote control is for.  Use the socket when one
+# is there and fall back to $TERM when it is not, instead of choosing one.
+# TODO: wezterm, foot, alacritty and a plain X terminal each have a way to
+# be asked for a window and are left out until one is in front of someone.
 launch-backend() {
-    if [[ -n ${KITTY_LISTEN_ON:-} ]] && command -v kitty >/dev/null 2>&1; then
-        printf 'kitty'
-    elif [[ -n ${TMUX:-} ]] && command -v tmux >/dev/null 2>&1; then
-        printf 'tmux'
-    fi
+    local cmd
+    case ${TERM:-} in
+        xterm-kitty*) cmd=kitty ;;
+        tmux*)        cmd=tmux ;;
+        *)            return ;;
+    esac
+    command -v "$cmd" >/dev/null 2>&1 || return
+    printf '%s' "$cmd"
 }
 
 # Every exported variable as NAME=VALUE, NUL-separated so that a value
@@ -136,10 +161,11 @@ function launch() {
     local backend
     backend=$(launch-backend)
     if [[ -z $backend ]]; then
-        # No window to open: the terminal did not name itself, or its
-        # remote control is off.  Running the command here looks exactly
-        # like a window that opened elsewhere and is worse than failing,
-        # so it is refused unless LAUNCH_INPLACE asks for it.
+        # No window to open: $TERM names a terminal this does not know how
+        # to ask, or the binary that would ask it is not installed.
+        # Running the command here looks exactly like a window that opened
+        # elsewhere and is worse than failing, so it is refused unless
+        # LAUNCH_INPLACE asks for it.
         if [[ -z ${LAUNCH_INPLACE:-} ]]; then
             echo 'launch-error: no window to open' >&2
             echo 'launch-hint: LAUNCH_INPLACE=1 to run where the shell stands' >&2
@@ -161,29 +187,35 @@ function launch() {
         line+=" $(printf %q "$word")"
     done
 
-    # This shell's environment, put back in the new one.  A terminal hands
-    # its children the environment of the process that started it -- for
-    # tmux, the server's -- and not the caller's, so leaving this out is how
-    # a venv, a proxy setting or an API key quietly goes missing.
+    # This shell's environment, put back in the new one.  A terminal
+    # launches its children with the environment of the process that
+    # started it -- for tmux, the server's -- and not the caller's, so
+    # leaving this out is how a venv, a proxy setting or an API key
+    # quietly goes missing.  kitty is run from this shell and inherits its
+    # environment, so there is nothing to put back for it; only tmux, whose
+    # window travels over a socket to a server that was started once, has
+    # to be told.
     local -a env_args=() kv
     while IFS= read -r -d '' kv; do
         case $backend in
-            kitty) env_args+=(--env "$kv") ;;
             tmux)  env_args+=(-e "$kv") ;;
         esac
     done < <(launch-env)
 
     case $backend in
         kitty)
-            # --keep-focus so the window is one to go to and not one that
-            # arrives over the work in front of it.  --hold so the window
-            # survives the command.
+            # The binary and not the socket.  --detach forks from this
+            # shell, so the window inherits its directory, its environment
+            # and its file descriptors with nothing passed and nothing
+            # listening; --hold so the window survives the command.
+            # NOTE: with no socket there is no instance to join, so this is
+            # a kitty of its own and not a window in the one the shell is
+            # in; see the note on launch-backend.
             # TODO: drop --hold and let the window close itself once the
             # run is over; it is held open for now because a window that
             # stays is the only place to read a run while this is new.
-            kitty @ launch --type=os-window --keep-focus --hold \
-                --cwd "$PWD" "${env_args[@]}" \
-                -- bash -ic "$line"
+            kitty --detach --hold --title "$title" \
+                bash -ic "$line"
             ;;
         tmux)
             # -c for the directory and -e for the environment, because a
