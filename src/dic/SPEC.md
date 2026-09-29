@@ -59,6 +59,7 @@ Whenever possible, names and semantics remain the same as simonw's `llm`.
 |            | `--no-pv-thinking` | stream the reasoning text itself instead |
 |            | `--pv-response` | meter the answer on stderr too; the default when stdout is not a terminal |
 |            | `--no-pv-response` | do not meter the answer |
+|            | `--trace`      | record per-round byte-rate samples for plotting |
 |            | `--clipboard`  | copy the answer to the terminal's clipboard (the default on a terminal) |
 |            | `--tools`      | offer an importable python function as a tool; repeatable |
 |            | `--aliases`    | print shell alias definitions for `dic.sh` to eval |
@@ -511,6 +512,18 @@ names -- so both are recorded the same way and both are read back from disk when
 the conversation is rebuilt.
 A file a turn names that dic can no longer read is an error, never a turn that
 quietly loses it.
+
+A fourth table `trace` holds the byte-rate samples one round's streams
+produced, so that a plot of B/s over time is a query and not only something
+watched on a terminal.  It has one row per round that was traced, keyed by
+`mid`, and none for a round that was not, so an install that does not trace
+carries no bytes and no reader of the message tree pays for the indirection.
+`samples` is a JSON list of `[t_ms, thinking, response]` on a 100ms grid: how
+many bytes of reasoning and how many bytes of answer had arrived by each
+point, in milliseconds since the round's request went out.  Recording is off
+by default -- `--trace` / `DIC_TRACE` -- because it is a diagnostic and not
+a fact a conversation needs, and a round it skips is a missing row rather
+than a null.
 
 ## Model configuration
 

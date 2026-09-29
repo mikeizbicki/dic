@@ -2,6 +2,10 @@
 
 export DIC_MODEL=groq+qwen
 export DIC_SYSTEM="Keep your response short, between 1-20 lines. Focus on a high signal to noise ratio (audience has strong math/cs background). If the question is about a computer, respond for: $(uname -a)."
+# Record per-round byte-rate samples into dic.db, so that a B/s over time
+# plot is a SQL query.  Off by default in dic; on here because the curves
+# are the whole reason this install exists.
+export DIC_TRACE=1
 [[ $- == *i* ]] && export DIC_SESSION="$$"
 
 alias qwen='dic -m groq+qwen'
@@ -114,7 +118,7 @@ _dic_complete() {
                               --graph --session \
                               --cache --tools --path --mime-type \
                               --pv-thinking --no-pv-thinking \
-                              --clipboard --no-clipboard --stats" -- "$cur") )
+                              --clipboard --no-clipboard --trace --stats" -- "$cur") )
   fi
 }
 complete -F _dic_complete dic

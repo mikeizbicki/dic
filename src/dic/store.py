@@ -103,6 +103,13 @@ CREATE TABLE IF NOT EXISTS attachments (
     path TEXT,
     hash TEXT,
     mime_type TEXT);
+-- The byte-rate samples one round's streams produced, one row per round that
+-- was traced and none for a round that was not: a plot is a separate read of
+-- this table and never a column of `messages`, so an untraced install carries
+-- no bytes at all and no reader of the message tree pays for the indirection.
+CREATE TABLE IF NOT EXISTS trace (
+    mid TEXT PRIMARY KEY,
+    samples TEXT);
 CREATE TABLE IF NOT EXISTS config (
     id TEXT PRIMARY KEY,
     parent TEXT,
@@ -265,6 +272,62 @@ def ulid():
     """
     n = (int(time.time() * 1000) << 80) | int.from_bytes(os.urandom(10), "big")
     return "".join(B32[(n >> (5 * i)) & 31] for i in range(25, -1, -1))
+
+
+class Trace:
+    """Byte totals of a round's streams, sampled on a 100ms grid.
+
+    A sample is `[t_ms, thinking, response]`: how many bytes of reasoning
+    and how many bytes of answer had arrived by that point of the call, in
+    milliseconds since the round's request went out, so that a plot of the
+    running total -- or of the rate between two grid points -- is a
+    subtraction.  Gridded and not one sample per chunk because a long answer
+    is thousands of chunks and ten samples a second is the same picture at a
+    hundredth of the bytes.  A round nobody traced has no row, which is not
+    an empty one.
+
+    >>> t = Trace(0)
+    >>> t.add(50 * 10**6, "response", 5)     # grid 0
+    >>> t.add(150 * 10**6, "thinking", 3)    # grid 1 opens
+    >>> t.add(190 * 10**6, "thinking", 7)    # still grid 1
+    >>> t.add(250 * 10**6, "response", 2)    # grid 2 opens
+    >>> t.json()
+    '[[0, 0, 5], [100, 10, 5], [200, 10, 7]]'
+    >>> Trace(0).json() is None
+    True
+    """
+    GRID_NS = 100 * 10**6
+
+    def __init__(self, t0):
+        self.t0 = t0
+        self.grid = -1
+        self.thinking = 0
+        self.response = 0
+        self.samples = []
+
+    def add(self, t_ns, kind, nbytes):
+        """Record nbytes of the given stream at t_ns.
+
+        A blob is the answer, so it counts as response and not as a stream
+        of its own: a video has no tokens to plot and no rate to read.
+        """
+        if not nbytes:
+            return
+        if kind == "thinking":
+            self.thinking += nbytes
+        else:
+            self.response += nbytes
+        grid = max(0, (t_ns - self.t0) // self.GRID_NS)
+        sample = [grid * 100, self.thinking, self.response]
+        if grid == self.grid:
+            self.samples[-1] = sample
+        else:
+            self.grid = grid
+            self.samples.append(sample)
+
+    def json(self):
+        """The samples as JSON, or None when this stream delivered nothing."""
+        return json.dumps(self.samples) if self.samples else None
 
 
 def data_url(block):
