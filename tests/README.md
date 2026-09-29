@@ -1,12 +1,18 @@
 # tests
 
+The tree is split by what it tests: `tests/dic` holds the python tests of
+the `dic` program, and everything beside this file is the shell side, where
+the tools under `scripts/` are tested.
+
+## dic
+
 Most of `dic` is pure functions, and those are tested where they live: a
 docstring with a `>>>` in it is the test, and `pytest --doctest-modules` runs
 them.  A new example goes next to the function it describes, not in here.
 
 What is left is what a doctest cannot show: sqlite, a config file, a socket, a
-thread, a terminal.  That is what this directory holds, and nearly every test
-in it is one `dic()` call -- a prompt in, an answer out, a row written --
+thread, a terminal.  That is what `tests/dic` holds, and nearly every test in
+it is one `dic()` call -- a prompt in, an answer out, a row written --
 because that is the unit a user has and the unit a regression breaks.
 
 The rules:
