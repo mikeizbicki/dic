@@ -158,6 +158,36 @@ def rate(model, usage, facts):
     return total, items
 
 
+# The rule name a provider-reported charge is stored under, and the value
+# `price_hash` takes for a row that was invoiced rather than estimated: one
+# name, so --stats counts the two separately without a second column.
+REPORTED = "provider"
+
+
+def reported(total, estimate=None):
+    """(total, items) for a call the provider itself priced.
+
+    A provider that says what it charged is the ground truth, so the price
+    table is not consulted and the dollars are taken as given.  The estimate
+    the table would have produced is kept beside them, so a table that has
+    drifted from the invoice is visible rather than assumed; nothing reads it
+    back, because a bill is stored and never recomputed.
+
+    >>> total, items = reported(0.0245)
+    >>> total, items[0]["cost"], items[0]["rule"]
+    (0.0245, 0.0245, 'provider')
+    >>> reported(0.0245, 0.02)[1][0]["estimate"]
+    0.02
+    >>> reported(0.0)[1][0]["cost"]        # a call the provider made free
+    0.0
+    """
+    item = {"rule": REPORTED, "key": "cost", "qty": total, "rate": 1.0,
+            "cost": total}
+    if estimate is not None:
+        item["estimate"] = estimate
+    return total, [item]
+
+
 def merged(rounds):
     """(usage, items): several rounds' billing as though it were one call.
 

@@ -112,6 +112,10 @@ def parse(event, acc):
     ('', '')
     >>> acc["tier"]
     'flex'
+    >>> parse({"choices": [], "usage": {"prompt_tokens": 3, "cost": 0.0245}}, acc)
+    ('', '')
+    >>> acc["usage"], acc["cost"]
+    ({'in': 3}, 0.0245)
     """
     if event.get("error"):
         # a failure reported as a data frame rather than as a status code
@@ -126,6 +130,10 @@ def parse(event, acc):
     usage = event.get("usage")
     if usage:
         acc["usage"] = openai_usage(usage)
+        if usage.get("cost") is not None:
+            # a dollar amount only when the provider charged one: absent means
+            # the amount is not known, and 0.0 is a charge like any other
+            acc["cost"] = float(usage["cost"])
     text, kind = "", ""
     for choice in event.get("choices") or []:
         if choice.get("finish_reason"):

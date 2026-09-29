@@ -323,7 +323,11 @@ The messages table has the following columns:
   *stored* when the call ends and never recomputed.  A call that never
   finished -- a ^C, or a stream that failed after its 200 -- is stored with
   `cost` NULL and not zero, because `--stats` sums that column and a call
-  that was cut short is not a free one.
+  that was cut short is not a free one.  A provider that reports what it
+  charged is the ground truth and its dollars are the ones stored; the
+  table's estimate is kept beside them in `cost_items`, and `price_hash` is
+  then the literal `provider` instead of a table's, so an invoiced row is
+  countable apart from an estimated one.
 - `tokens_input`, `tokens_output`, `tokens_reasoning`: the three counts a price
   is usually quoted in, as `GENERATED` `VIRTUAL` columns over `usage`.  The same
   rule as `time` below: a value that is a function of another value is not

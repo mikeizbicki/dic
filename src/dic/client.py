@@ -645,26 +645,36 @@ def dic(prompt,
         stamps["error"] = wire.get("error")
 
     def billing(acc):
-        """The usage one round reported and what the price table makes of it.
+        """The usage of one round, the dollars it cost, and where they came from.
 
         One place, reached from the reply, the tool loop and the cancelled
         path, so a ^C's cost line and the reply's are the same numbers.  The
         itemization comes back with the total because it is what gets stored:
         the rule that priced each count is not recoverable from the config,
-        which the next invocation may already have edited.
+        which the next invocation may already have edited.  A provider that
+        priced the call itself wins over the table, so the fourth value names
+        which of the two produced the bill.
         """
         usage = acc.get("usage") or {}
         # the tier is what the response says it charged, never what the request
         # asked for: a provider that ignores -o service_tier must not be priced
         # as though it had obeyed it
         facts = price.facts(usage, acc.get("tier") or "default")
+        charged = acc.get("cost")
+        if charged is not None:
+            # the provider priced this call itself, so its number is the bill
+            # and the table's is a second opinion kept beside it; the hash is
+            # the name of that provenance and not of a table
+            total, items = price.reported(charged,
+                                          price.rate(model, usage, facts)[0])
+            return usage, total, items, price.REPORTED
         total, items = price.rate(model, usage, facts)
-        return usage, total, items
+        return usage, total, items, price.price_hash(model)
 
     ids = [att["aid"] for att in attached]
 
     def insert(index, prev, response, raw, outputs, results, usage, cost, items,
-               status, error, wire):
+               status, error, wire, source):
         """Append one round -- one API call -- to the tree, and return its mid.
 
         A tool loop is several paid requests for one answer, so each is a row
@@ -683,7 +693,7 @@ def dic(prompt,
             model["model_id"], api_type, status, error,
             json.dumps(usage) if usage else None,
             cost, json.dumps(items) if items is not None else None,
-            price.price_hash(model) if cost is not None else None,
+            source if cost is not None else None,
             wire.get("t_start"), wire.get("t_connect"), wire.get("t_request"),
             wire.get("t_headers"), wire.get("t_first"), wire.get("t_last"),
             wire.get("t_done")))
@@ -792,7 +802,7 @@ def dic(prompt,
                                 "ok": ok, "error": None if ok else content,
                                 "content": content, "t_start": started,
                                 "t_end": time.time_ns()})
-            usage, cost, items = billing(acc)
+            usage, cost, items, source = billing(acc)
             rounds.append((usage, cost, items))
             raw = adaptor.finish(acc)
             if not asked:
@@ -803,7 +813,7 @@ def dic(prompt,
                           [{"path": p, "mime_type": mime}
                            for p in sink.paths[seen:]],
                           results, usage, cost, items,
-                          wire["status"], wire.get("error"), wire)
+                          wire["status"], wire.get("error"), wire, source)
             seen = len(sink.paths)
             conn.commit()
             turns.append({"role": "assistant", "blocks": [], "raw": raw})
@@ -828,7 +838,7 @@ def dic(prompt,
             out.flush()
         pending = sink.pending()
         sink.abandon()
-        usage, cost, items = billing(acc)
+        usage, cost, items, source = billing(acc)
         rounds.append((usage, cost, items))
         keep(wire)
         # a call that was cut short has no bill to store: cost is NULL and not
@@ -837,7 +847,7 @@ def dic(prompt,
         # what the line below reads.
         insert(index, prev, "".join(chunks), adaptor.finish(acc),
                [{"path": pending, "mime_type": mime}] if pending else [],
-               results, usage, None, None, -1, "cancelled", wire)
+               results, usage, None, None, -1, "cancelled", wire, source)
         conn.commit()
         usage, items = price.merged(rounds)
         report(verbosity, 1,
@@ -857,13 +867,13 @@ def dic(prompt,
         close_meters()
         pending = sink.pending()
         sink.abandon()
-        usage, cost, items = billing(acc)
+        usage, cost, items, source = billing(acc)
         rounds.append((usage, cost, items))
         keep(wire)
         insert(index, prev, "".join(chunks), adaptor.finish(acc),
                [{"path": pending, "mime_type": mime}] if pending else [],
                results, usage, None, None, stamps.get("status") or -1, str(e),
-               wire)
+               wire, source)
         conn.commit()
         raise
     wire["t_done"] = stamps["t_done"] = time.time_ns()
@@ -889,7 +899,7 @@ def dic(prompt,
     billed = wire["status"] == 200
     mid = insert(index, prev, "".join(chunks), raw, outputs, results,
                  usage, cost if billed else None, items if billed else None,
-                 wire["status"], wire.get("error"), wire)
+                 wire["status"], wire.get("error"), wire, source)
     conn.commit()
     conn.close()
     # a failed attempt is recorded for the error rate but the session pointer

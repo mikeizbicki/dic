@@ -334,6 +334,9 @@ def summary(usage, items, mid, stamps, verbosity, partial=False):
     'cost: $0.0105 (input: $0.0030, output: $0.0075) --mid=01ABC'
     >>> summary({}, [], None, stamps, 1)
     'cost: $0.0000 (input: $0.0000, output: $0.0000)'
+    >>> summary({}, [{"rule": "provider", "key": "cost", "qty": 0.0245,
+    ...               "rate": 1.0, "cost": 0.0245}], None, stamps, 1)
+    'cost: $0.0245 (reported by the provider)'
     >>> summary({}, [], None, stamps, 1, partial=True)
     'cost: unknown (input: unknown, output: unknown)'
     >>> summary({"in": 1000}, items[:1], None, stamps, 1, partial=True)
@@ -351,9 +354,14 @@ def summary(usage, items, mid, stamps, verbosity, partial=False):
             return f"${sum(i['cost'] for i in priced):.4f}"
         return "unknown" if partial else "$0.0000"
 
-    money = (", ".join(f"{label(i)} {i['qty']}@{i['rate']:g}" for i in items)
-             if verbosity >= 2 and items
-             else f"input: {cost_of('in')}, output: {cost_of('out')}")
+    if any(i["key"] == "cost" for i in items):
+        # the provider priced the call itself and reported no breakdown, so
+        # there is no in/out pair to show and the total is the whole story
+        money = "reported by the provider"
+    elif verbosity >= 2 and items:
+        money = ", ".join(f"{label(i)} {i['qty']}@{i['rate']:g}" for i in items)
+    else:
+        money = f"input: {cost_of('in')}, output: {cost_of('out')}"
     total = (f"${sum(i['cost'] for i in items):.4f}" if items
              else ("unknown" if partial else "$0.0000"))
     line = f"cost: {total} ({money})"
