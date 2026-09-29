@@ -123,7 +123,7 @@ def session_cost_tree(conn, name):
     >>> _ = conn.executescript("CREATE TABLE messages(session TEXT, cost REAL);")
     >>> _ = conn.executemany("INSERT INTO messages VALUES (?, ?)",
     ...                      [("a", 1.0), ("a/b", 2.0), ("a/b/c", 4.0)])
-    >>> print(session_cost_tree(conn, "a"), end="")
+    >>> print(session_cost_tree(conn, "a"), end="")  # doctest: +NORMALIZE_WHITESPACE
     session	n	own	subtree
     a	1	1.0000	7.0000
     a/b	1	2.0000	6.0000
