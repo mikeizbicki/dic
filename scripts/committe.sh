@@ -114,7 +114,7 @@ function committe-apply() {
         # model does not always manage; `git-apply-fuzzy` retries the patch
         # and tolerates small mismatches in the context lines.
         echo "committe-warning: git apply failed, retrying with git-apply-fuzzy" >&2
-        git-apply-fuzzy -q "$patch_file" "$@" && break
+        git-apply-fuzzy -q "$patch_file" && break
 
         if (( i >= retries )); then
             echo "committe-error: git apply and git-apply-fuzzy both failed" >&2
