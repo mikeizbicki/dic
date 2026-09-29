@@ -1,0 +1,9 @@
+Add primes.py
+
+diff --git a/primes.py b/primes.py
+new file mode 100644
+--- /dev/null
++++ b/primes.py
+@@ -0,0 +1,2 @@
++def primes():
++    return [2, 3, 5]

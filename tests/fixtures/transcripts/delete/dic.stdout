@@ -1,0 +1,8 @@
+Remove hello.txt
+
+diff --git a/hello.txt b/hello.txt
+deleted file mode 100644
+--- a/hello.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-hello

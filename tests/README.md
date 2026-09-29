@@ -32,3 +32,22 @@ The rules:
   a different assertion.
 
 If a test needs three sentences of setup to be believed, the setup is the bug.
+
+
+## shell
+
+The tools under `scripts/` are bash, and bats is what tests bash.
+`tests/shell/*.bats` is one file per tool; `tests/test_shell.py` runs each
+one under pytest, so pytest stays the one command a developer types, and a
+missing bats is a skip there rather than a failure.
+
+The model is not called.  `tests/bin/dic` is a fake, and `FAKE_DIC_CASE`
+names a directory under `tests/fixtures/transcripts` holding a `dic.stdout`
+-- a reply recorded from the real command -- and the `dic.exit` it ended
+with.  `tests/record.sh` writes one such directory from one real call, so a
+fixture is refreshed by hand and a run of the tests only ever replays it.
+
+Everything else in a shell test is real: a temporary `git init` repository
+that the test tears down, the `git` a developer has, and the script under
+test.  The transport is faked and the work is not, which is the same shape
+as the python tests one directory up.

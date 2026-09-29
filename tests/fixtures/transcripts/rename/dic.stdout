@@ -1,0 +1,6 @@
+Rename hello.txt to goodbye.txt
+
+diff --git a/hello.txt b/goodbye.txt
+similarity index 100%
+rename from hello.txt
+rename to goodbye.txt
