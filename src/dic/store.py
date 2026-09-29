@@ -159,6 +159,25 @@ SELECT model_id, json_extract(value, '$.name') AS tool,
  GROUP BY model_id, tool ORDER BY n DESC
 """
 
+# What `dic --log` prints into a completion picker: one row per message, in
+# the order `git log` uses, so fzf reads top-down.  The mid is column one, so
+# the picker hides it with --with-nth=2.. and still hands {1} to --show.
+LOG = """
+WITH RECURSIVE chain(mid, prev_mid, model_id, cost, user, t_start, status) AS (
+    SELECT mid, prev_mid, model_id, cost, user, t_start, status
+      FROM messages WHERE mid = ?
+  UNION ALL
+    SELECT m.mid, m.prev_mid, m.model_id, m.cost, m.user, m.t_start, m.status
+      FROM messages m JOIN chain c ON m.mid = c.prev_mid)
+SELECT mid, t_start, model_id, cost, user, status
+  FROM chain ORDER BY t_start DESC LIMIT ?
+"""
+
+LOG_ALL = """
+SELECT mid, t_start, model_id, cost, user, status
+  FROM messages ORDER BY t_start DESC LIMIT ?
+"""
+
 B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 
@@ -320,6 +339,47 @@ def history(conn, mid):
         " SELECT * FROM chain",
         (mid,)).fetchall()
     return list(reversed(rows))
+
+
+def resolve_ref(conn, ref, env):
+    """A --mid value as a full mid: a git-like ref, or a ULID or its prefix.
+
+    `HEAD` and `@` name the message this session's pointer holds, `HEAD~1`
+    its parent and `HEAD~n` n steps above that, so a ref walks the same tree
+    -c walks, one prev_mid per step.  Any other value is a mid, or an
+    unambiguous prefix of one: a caller may paste the first column of
+    `dic --log` without its other twenty-five characters, and a prefix that
+    names two messages is an error rather than a guess.
+    """
+    if not ref:
+        return ref
+    ref = ref.strip()
+    if ref in ("HEAD", "@") or ref.startswith(("HEAD~", "@~")):
+        _, _, depth = ref.partition("~")
+        mid = session_read(env)
+        if not mid:
+            raise DicError(
+                f"{ref}: no conversation in this session"
+                f" (DIC_SESSION={env.get('DIC_SESSION', 'global')})")
+        for _ in range(int(depth) if depth else 0):
+            row = conn.execute("SELECT prev_mid FROM messages WHERE mid = ?",
+                               (mid,)).fetchone()
+            if not row or not row["prev_mid"]:
+                raise DicError(f"{ref}: {mid} has no parent")
+            mid = row["prev_mid"]
+        return mid
+    row = conn.execute("SELECT mid FROM messages WHERE mid = ?",
+                       (ref,)).fetchone()
+    if row:
+        return row["mid"]
+    rows = conn.execute("SELECT mid FROM messages WHERE mid LIKE ?"
+                        " ORDER BY mid LIMIT 2", (ref + "%",)).fetchall()
+    if len(rows) == 1:
+        return rows[0]["mid"]
+    if not rows:
+        raise DicError(f"no such mid: {ref}")
+    raise DicError(f"{ref}: ambiguous between {rows[0]['mid']}"
+                   f" and {rows[1]['mid']}")
 
 
 def file_block(path, mime_type=None):
