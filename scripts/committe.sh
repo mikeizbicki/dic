@@ -4,6 +4,13 @@
 # and how AI coding agents work.
 
 function committe() {
+    # exit code meaning:
+    # 0 committed
+    # 1 nothing could be applied
+    #   (diff malformed and request should be repeated/manually fixed)
+    # 2 the model asked a question instead of making a change
+    #   (no diff provided)
+
     # only allow committe to run if the repo is clean
     if ! git rev-parse --git-dir >/dev/null 2>&1; then
         echo "committe-error: not inside a git repository" >&2
@@ -18,33 +25,23 @@ function committe() {
         return 1
     fi
 
-    # generate and apply the patch.  committe-apply's status is this
-    # function's: 0 committed, 2 the model asked a question instead of
-    # making a change, 1 nothing could be applied.
+    # generate and apply the patch
     committe-mkpatch "$@" || return $?
     committe-apply
 }
 
 function committe-patchfile() {
     # Output the absolute path to the temporary file that will store the patch.
-    # Everything goes under .git/.committe so it survives across invocations
+    # Everything goes under .git so it survives across invocations
     # and can be inspected when debugging a failed patch.
-    # `git rev-parse --git-dir` works even from subdirectories of the repo.
+    # `git rev-parse --git-dir` works even from subdirectories of the repo,
+    # and any worktrees will automatically have different paths.
     echo "$(git rev-parse --git-dir)/committe-patchfile"
 }
 
 function committe-message() {
     # The commit message: everything above the first "diff --git" line.
-    # A line beginning '#!' is committe's signal and not the model's prose,
-    # so it is dropped, and the blank lines it leaves at the top go with it.
-    sed -e '/^diff --git/,$d' -e '/^#!/d' -e '/./,$!d' "$(committe-patchfile)"
-}
-
-function committe-blocked() {
-    # The question the model flagged beside its patch, if it wrote one: a
-    # line beginning '#!' above the commit message.  Empty when there is
-    # none, so a caller can test it as a string.
-    sed -n 's/^#![[:space:]]*//p' "$(committe-patchfile)"
+    sed -e '/^diff --git/,$d' -e '/./,$!d' "$(committe-patchfile)"
 }
 
 function committe-mkpatch() {
@@ -72,11 +69,7 @@ function committe-apply() {
     local blocked=$(committe-blocked)
 
     # A reply with no patch at all is the model asking a question instead of
-    # making a change, so there is nothing to apply and nothing to commit:
-    # the question is printed and the status is 2, which is not the 1 a
-    # failure exits with, so a caller can tell "it asked me something" from
-    # "it could not do it" and a loop that feeds failures back to the model
-    # knows to stop.
+    # making a change, so there is nothing to apply and nothing to commit
     if ! grep -q '^diff --git ' "$patch_file"; then
         echo "committe-question: the model made no change; it asks:" >&2
         sed 's/^#![[:space:]]*//' "$patch_file" >&2
@@ -107,11 +100,6 @@ function committe-apply() {
     # and setting the committer fields.
     local commit_message
     commit_message="[geni] $(committe-message)"
-    if [[ -n $blocked ]]; then
-        # the model is making the change and saying what it is unsure of,
-        # so the doubt is recorded with the commit instead of being lost
-        commit_message="$commit_message"$'\n\n'"$blocked"
-    fi
     if ! GIT_COMMITTER_NAME='committe' GIT_COMMITTER_EMAIL='committe@agent' git commit --quiet -m "$commit_message"; then
         echo "committe-error: git commit failed" >&2
         return 1
@@ -119,9 +107,6 @@ function committe-apply() {
 
     # Show a short summary of the commit we just made.
     git show HEAD --stat --format='%h %s'
-    if [[ -n $blocked ]]; then
-        echo "committe-question: $blocked" >&2
-    fi
 }
 
 function committe-prompt() {
@@ -152,12 +137,11 @@ diff --git a/path/to/file b/path/to/file
 Rules:
 - No other content.
     - Do NOT wrap your response in markdown code fences.
-    - Do NOT include any prose other than the commit message, the one line
-      beginning '#!' described below, and the question that a reply with
-      no patch consists of.
+    - Do NOT include any prose other than the commit message
 - The commit message uses Tim pope style
     - imperative header (50 char max)
-    - optional body explaining the changes should be used only on algorithmically complex patches
+    - optional body explaining the changes
+        - should be used only on complex patches
 - Use standard unified diff syntax with '--- a/...' and '+++ b/...' headers.
     - For new files use '--- /dev/null' and '+++ b/path'.
     - You must also specify the mode of the new file
@@ -171,8 +155,8 @@ Rules:
       (Including whitespace, quotation marks, and other punctuation.)
 - Prefer small, focused patches.
 - State a structural change the way git states it, never as content.
-    - To move a file, state the rename and no hunks: it is the whole file
-      for four lines instead of one deleted line per line of it.
+    - To move a file, state the rename and no hunks.
+      For example:
           diff --git a/old b/new
           similarity index 100%
           rename from old
@@ -189,16 +173,10 @@ Rules:
     - A new file states its mode: 100644, or 100755 when it is executable.
     - A symlink is a new file of mode 120000 whose one added line is the
       path it points at.
-    - Never change a submodule pointer: a gitlink names a commit that must
-      already exist on the remote, which only the user can decide.
-    - A binary file has no patch form at all.
 - If the change cannot or should not be made yet -- the request is
   ambiguous, the tree does not support it, or you need a decision the user
-  has not made -- write no patch and reply with your question alone.  It is
-  printed and nothing is committed.
-    - To make the change and still ask something about it, put the question
-      on one line beginning '#!' above the commit message; the patch is
-      committed and the line is recorded with it.
+  has not made -- write no patch and reply with your question alone.
+    - It is printed and nothing is committed.
 
 Use the following information to help you write the code:
 
