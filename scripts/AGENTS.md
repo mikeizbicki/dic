@@ -8,3 +8,7 @@ its own.  A wrapper must never swallow a flag meant for what it wraps.
 - An unknown flag passes through, not rejected, so a flag added to `dic`
   works here unedited.
 - `committe -- -f` names the wrapped `-f` when both define one.
+- Every word `dic` does not read as an option is a prompt word, wherever it
+  sits on the line, so a wrapper may pass its own instructions as one more
+  argument in front of a request and never has to know which of the rest are
+  flags and which are the request.

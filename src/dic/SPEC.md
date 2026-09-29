@@ -76,6 +76,14 @@ reads a number and not a line of prose:
 |            | `--cost-of`     | the spend of the conversation ending at REF |
 |            | `--cost-tree`   | the per-session breakdown of a session's subtree |
 
+The prompt is what is left over.  Every word on the command line that is not
+an option is a prompt word, wherever it sits, and they are joined with one
+space; a stdin that is not a terminal is appended after a blank line.  An
+option `dic` does not know is a prompt word too and never an error, because a
+wrapper such as `committe` puts its own instructions in front of a request it
+forwards and cannot be asked to know which of `dic`'s options the rest of the
+line holds.
+
 ### Defaults
 
 Two environment variables supply defaults for the two flags a user tends to want
