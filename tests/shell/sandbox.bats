@@ -66,12 +66,15 @@ given() { grep -qxF -- "$1" "$FAKE_BWRAP_LOG"; }
     ! given /etc/ssh
 }
 
-@test "a caller's arguments come after the filter, so a -- cannot swallow it" {
+@test "a caller's arguments come after the filter" {
     fake_bwrap
     run sandbox --share-net -- true
-    seccomp=$(awk '/^--seccomp$/{print NR; exit}' "$FAKE_BWRAP_LOG")
-    share=$(awk '/^--share-net$/{print NR; exit}' "$FAKE_BWRAP_LOG")
-    [ -n "$seccomp" ] && [ -n "$share" ]
+    # the line numbers, with no brace of their own: the braces that open and
+    # close a test are what tells the bats reader where its body ends
+    seccomp=$(grep -nx -- --seccomp "$FAKE_BWRAP_LOG" | cut -d: -f1)
+    share=$(grep -nx -- --share-net "$FAKE_BWRAP_LOG" | cut -d: -f1)
+    [ -n "$seccomp" ]
+    [ -n "$share" ]
     [ "$seccomp" -lt "$share" ]
 }
 

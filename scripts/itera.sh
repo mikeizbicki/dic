@@ -76,7 +76,11 @@ function itera() {
     # The tree must already be green.  Otherwise the loop would be fixing
     # pre-existing failures, and a green tree would otherwise end the loop
     # before it had made the change being asked for.
-    if ! local pre=$($test_cmd 2>&1); then
+    # `local pre=$(...)` would read as a success whatever the test did:
+    # local returns its own status and not the command substitution's.  So
+    # the assignment is a statement of its own and the if reads the test's.
+    local pre
+    if ! pre=$($test_cmd 2>&1); then
         printf '%s\n' "$pre" >&2
         echo 'itera-error: tests do not pass before starting' >&2
         return 1
