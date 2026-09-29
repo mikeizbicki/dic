@@ -83,3 +83,4 @@ given() { grep -qxF -- "$1" "$FAKE_BWRAP_LOG"; }
     export XDG_CACHE_HOME="$BATS_TEST_TMPDIR/cache"
     blob=$(sandbox-seccomp-blob)
     [ -s "$blob" ]
+}
