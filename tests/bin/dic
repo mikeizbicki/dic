@@ -1,0 +1,19 @@
+#!/bin/bash
+# Fake dic for tests: replay a recorded transcript instead of calling the
+# model, so a shell test costs nothing and answers the same thing every run.
+# FAKE_DIC_CASE names a directory under tests/fixtures/transcripts holding
+# dic.stdout, the reply to print, and dic.exit, the status to exit with.
+# FAKE_DIC_LOG, when set, receives the arguments the fake was called with.
+set -u
+
+case_dir=${FAKE_DIC_CASE:?fake dic: FAKE_DIC_CASE is not set}
+
+if [[ ! -f $case_dir/dic.stdout ]]; then
+    echo "fake dic: no transcript: $case_dir/dic.stdout" >&2
+    exit 1
+fi
+
+[[ -n ${FAKE_DIC_LOG:-} ]] && printf '%s\n' "$@" >> "$FAKE_DIC_LOG"
+
+cat "$case_dir/dic.stdout"
+exit "$(cat "$case_dir/dic.exit" 2>/dev/null || echo 0)"

@@ -22,7 +22,7 @@ from dic.store import db
 from dic.tty import DicError
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.join(os.path.dirname(HERE), "src")
+SRC = os.path.join(HERE, os.pardir, os.pardir, "src")
 
 
 class Fake:

@@ -8,9 +8,10 @@ import collections, http.server, io, json, os, subprocess, sys, threading
 
 import pytest
 
-# so `pytest tests/` works from a checkout, the way `pytest src/` does
+# so `pytest tests/` works from a checkout, the way `pytest src/` does;
+# tests/dic sits two levels below the root that holds src/
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                   os.pardir, "src")
+                   os.pardir, os.pardir, "src")
 sys.path.insert(0, SRC)
 
 from dic.store import config_dir
