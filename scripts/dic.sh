@@ -81,6 +81,19 @@ _dic_complete() {
 }
 complete -F _dic_complete dic
 
+# The same picker on a keystroke: TAB always opens it, which costs a
+# caller who already knows the mid; binding it to \C-x\C-m lets that fast
+# path stay fast and makes the window onto the tree opt-in.  The chosen
+# mid is spliced in at the cursor as --mid=REF, which is how -c reaches a
+# message -- -c takes no value of its own, so the ref travels beside it.
+_dic_pick() {
+  local mid=$(_dic_mids)
+  [[ -z $mid ]] && return
+  READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT} --mid=$mid ${READLINE_LINE:$READLINE_POINT}"
+  READLINE_POINT=$((READLINE_POINT + 8 + ${#mid}))
+}
+bind -x '"\C-x\C-m":_dic_pick'
+
 # --- prompt-expansion widget --------------------------------------------
 # This widget introduces a new syntax $$(...) for command substitution.
 # When this widget encounters
