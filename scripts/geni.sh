@@ -10,12 +10,12 @@
 # checkout untouched, with the failing tests and the commit that did not
 # work in the worktree.
 #
-# The run is handed to `launch`, which opens a window of its own when the
-# terminal has one to open and runs the command where the shell stands when
-# it does not.  A run is then something to leave and come back to instead
-# of a command that holds the shell, and a machine without a terminal
-# `launch` knows is unchanged.  Nothing comes back from the window, so what
-# geni returns is the launcher's status and not the run's.
+# The run happens where the shell stands.  Handing it to `launch` so that a
+# run is something to leave and come back to, instead of a command that
+# holds the shell, is the TODO at the end of this file.  It is deferred for
+# now because a window that never opened and a window that opened elsewhere
+# look the same to a caller, and a silent run in place behind that is worse
+# than a refusal.
 #
 # The merge is a fast-forward and nothing else, so the tree that arrives is
 # byte for byte the tree that passed the tests.  Nothing here resolves a
@@ -23,8 +23,7 @@
 # makes it.
 #
 # Sourcing this file defines the functions and does nothing else.  `itera`
-# must already be sourced, and `launch` to get a window: the work in the
-# worktree is itera's.
+# must already be sourced: the work in the worktree is itera's.
 
 geni-usage() {
     cat <<'EOF'
@@ -34,22 +33,17 @@ Run itera on a git worktree of its own, and merge the branch back if the
 tests pass.
 
 A new branch off HEAD is checked out in a worktree outside the repository
-and REQUEST is passed to itera unchanged.  In a terminal `launch` can open
-a window in, the run happens there and the shell that started it is free at
-once; otherwise the run happens where the shell stands.  On success the
-branch is fast-forwarded onto the branch that was current, the worktree is
-removed, and the window says so.  On failure the worktree is left as it is,
-with the unfinished branch and the test output in it.
+and REQUEST is passed to itera unchanged there.  The run happens in the
+shell that called geni, so geni's status is the run's status.  On success
+the branch is fast-forwarded onto the branch that was current and the
+worktree is removed.  On failure the worktree is left as it is, with the
+unfinished branch and the test output in it.
 
 Because the work is on a branch of its own, the starting checkout is
 untouched until the tests are green, and because a fast-forward is the only
 merge this does, a green run never has to resolve anything.  A starting
 branch that moved while itera ran cannot be fast-forwarded, and geni says
 so instead of merging behind the user's back.
-
-A window has no channel back to the shell that opened it, so in that case
-geni's status is the launcher's and not the run's: the run is read in the
-window.
 
 flags:
   -h, --help    show this help.
@@ -115,18 +109,12 @@ function geni() {
         return 1
     fi
 
-    # The run goes to a window of its own when there is one to open, so
-    # that a run is something to leave and come back to.  The branch name
-    # exists now and the banner wants it, so the window is opened from here
-    # and not from the top of the function.  `launch` runs the command
-    # where the shell stands when it has no window to open, and when there
-    # is no launcher at all, so every path out of here is unchanged.
-    if declare -F launch >/dev/null 2>&1; then
-        launch --banner "geni: $branch" --title "geni: $branch" \
-               -- geni-run "$wt" "$branch" "$root" "${request[@]}"
-    else
-        geni-run "$wt" "$branch" "$root" "${request[@]}"
-    fi
+    # The run happens here.  TODO: hand it to `launch` so that it happens
+    # in a window of its own instead; see the TODO at the end of this file.
+    # It is not called yet because a window that never opened looks the
+    # same as a window that opened elsewhere, and a run in place behind
+    # that is worse than saying so.
+    geni-run "$wt" "$branch" "$root" "${request[@]}"
 }
 
 # Everything geni does once the worktree exists: the loop, the merge back,
@@ -178,18 +166,11 @@ function geni-run() {
     git -C "$root" branch -d "$branch" >/dev/null 2>&1 \
         || echo "geni-hint: the branch is still there: $branch" >&2
 
-    # Say so and stop.  In a window this is the last line and the window is
-    # left where it is; there is nobody else to tell, because nothing goes
-    # back to the shell that opened it.
-    if declare -F launch-banner >/dev/null 2>&1; then
-        launch-banner 'geni succeeded'
-    else
-        echo 'geni succeeded'
-    fi
-
-    # TODO: close the window here instead of leaving it for the user to
-    # close.  It is left open for now, with `--hold` in launch, because a
-    # window that stays is the only place to read a run while this is new.
+    # Say so and stop.  TODO: when the run happens in a window of its own,
+    # this is the last line and the window should close itself instead of
+    # waiting for the user, the way `--hold` in launch leaves it now.  Until
+    # then the shell that called geni is the one to tell.
+    echo 'geni succeeded'
     return 0
 }
 

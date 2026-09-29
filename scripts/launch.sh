@@ -1,8 +1,9 @@
 # This file defines `launch`, which runs a command in a window of its own.
 #
 # `launch CMD ARGS` opens a new terminal window running CMD ARGS.  A shell
-# with no window to open runs them where it stands, so a machine without a
-# terminal `launch` knows is exactly as it was before there was a launcher.
+# with no window to open is an error, unless LAUNCH_INPLACE is set, because
+# running the command where the shell stands looks the same as a window that
+# opened elsewhere and is worse than saying so.
 #
 # Everything the command needs is copied at spawn time, and nothing is
 # passed back afterwards.  The two windows share no channel: there is no
@@ -24,9 +25,10 @@ launch-usage() {
     cat <<'EOF'
 usage: launch [flags] [--] CMD [ARGS...]
 
-Run CMD ARGS in a window of its own, or where the shell stands if there is
-no window to open.  The window is started with this shell's environment and
-in this shell's directory.
+Run CMD ARGS in a window of its own, started with this shell's environment
+and in this shell's directory.  A terminal `launch` cannot open a window in
+is an error: running the command where the shell stands looks the same as a
+window and is worse than saying so.  LAUNCH_INPLACE=1 asks for it anyway.
 
 flags:
   --banner TEXT   print TEXT between ruled lines before CMD runs.
@@ -134,9 +136,15 @@ function launch() {
     local backend
     backend=$(launch-backend)
     if [[ -z $backend ]]; then
-        # No window to open.  That is not a reason to refuse the command,
-        # so it runs where the shell stands and a caller that asked for a
-        # window gets the command instead.
+        # No window to open: the terminal did not name itself, or its
+        # remote control is off.  Running the command here looks exactly
+        # like a window that opened elsewhere and is worse than failing,
+        # so it is refused unless LAUNCH_INPLACE asks for it.
+        if [[ -z ${LAUNCH_INPLACE:-} ]]; then
+            echo 'launch-error: no window to open' >&2
+            echo 'launch-hint: LAUNCH_INPLACE=1 to run where the shell stands' >&2
+            return 1
+        fi
         "${cmd[@]}"
         return
     fi
