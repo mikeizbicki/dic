@@ -1,0 +1,15 @@
+#!/bin/bash
+# Fake bwrap for the sandbox tests: record the argument list sandbox() built
+# and succeed.  A jail is made of namespaces, and sandbox() installs a filter
+# that refuses the unshare and mount those need -- so a real jail cannot be
+# created from inside the jail `sandbox pytest` is, which is where the tests
+# run.  The argument list is the whole contract with bwrap, since bwrap is
+# what does the jailing, so that is what the tests check.
+set -u
+
+if [[ -z ${FAKE_BWRAP_LOG:-} ]]; then
+    echo "fake bwrap: FAKE_BWRAP_LOG is not set" >&2
+    exit 1
+fi
+
+printf '%s\n' "$@" >> "$FAKE_BWRAP_LOG"

@@ -43,17 +43,48 @@ If a test needs three sentences of setup to be believed, the setup is the bug.
 ## shell
 
 The tools under `scripts/` are bash, and bats is what tests bash.
-`tests/shell/*.bats` is one file per tool; `tests/test_shell.py` runs each
-one under pytest, so pytest stays the one command a developer types, and a
-missing bats is a skip there rather than a failure.
+`tests/shell/*.bats` is one file per tool, and `tests/test_shell.py` runs
+each one under pytest, so pytest stays the one command a developer types.
+A missing bats, or a `tests/shell` with no suites in it, is a failure and
+not a skip: an empty collection reads as a green run that covered less than
+it claims.
 
-The model is not called.  `tests/bin/dic` is a fake, and `FAKE_DIC_CASE`
-names a directory under `tests/fixtures/transcripts` holding a `dic.stdout`
--- a reply recorded from the real command -- and the `dic.exit` it ended
-with.  `tests/record.sh` writes one such directory from one real call, so a
-fixture is refreshed by hand and a run of the tests only ever replays it.
+Two things are faked in a shell test and nothing else is.  `tests/bin/dic`
+replays a recorded reply, and `tests/bin/bwrap` records the argument list
+`sandbox()` builds.  The temporary `git init` repository the test tears
+down, the `git` a developer has, the script under test, and the shell that
+runs them are all real.
 
-Everything else in a shell test is real: a temporary `git init` repository
-that the test tears down, the `git` a developer has, and the script under
-test.  The transport is faked and the work is not, which is the same shape
-as the python tests one directory up.
+`tests/bin/bwrap` is there because a real jail cannot be made from inside
+`sandbox pytest`: the outer sandbox installs a filter that refuses the
+`unshare` and `mount` a jail is made of.  The argument list is the whole
+contract with bwrap, since bwrap is what does the jailing, so that is what
+the sandbox suite checks.
+
+
+## recording
+
+A transcript is one reply from the real model, captured once and replayed
+thereafter.  `tests/record.sh` is what captures it: it calls `dic` the way
+`committe` calls it -- the same `-s "$(committe-prompt)"` -- and writes what
+came back to `tests/fixtures/transcripts/<case>/dic.stdout`, with the status
+it exited with in `dic.exit` beside it.  A test names the case through
+`FAKE_DIC_CASE`; `tests/bin/dic` replays it and never touches a provider.
+
+Everything after the case name is the request, so the arguments are the
+ones a `committe` invocation would take:
+
+    $ tests/record.sh add-file -m groq+qwen 'create a file primes.py'
+    $ tests/record.sh question -m anthropic+sonnet 'make the tests faster'
+    $ tests/record.sh offline -m no-such-model 'add a docstring to add()'
+
+Record when a new case is wanted -- the reply a live model gives is the one
+to freeze, not a reply written by hand -- when `committe-prompt` changed and
+the old reply no longer matches what a live call would say, or when a
+failure has to be pinned, since `dic.exit` carries the status and a
+rate-limited or unknown-model call is a transcript too.
+
+Do not record to make a failing test pass.  A fixture that no longer
+matches the prompt is the bug the test found, so look at both sides before
+refreshing either.  Do not put `record.sh` in CI: it calls the model, and
+the replay side is the only part that is free.
