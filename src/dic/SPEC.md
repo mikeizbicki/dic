@@ -75,6 +75,7 @@ reads a number and not a line of prose:
 |            | `--cost-session` | the spend of a session and its sub-sessions |
 |            | `--cost-of`     | the spend of the conversation ending at REF |
 |            | `--cost-tree`   | the per-session breakdown of a session's subtree |
+|            | `--providers`   | the upstreams a router chose, per model |
 
 The prompt is what is left over.  Every word on the command line that is not
 an option is a prompt word, wherever it sits, and they are joined with one
@@ -350,6 +351,11 @@ The messages table has the following columns:
   of `parent`, and the cost of a harness run is one query over one index.  This
   is not session state: a pointer is still a tmpfs file, and this is a fact about
   the row, like `model_id`.
+- `provider`: the upstream that actually answered, as the router named it in
+  its own `provider` field, or NULL when the response named none.  A fact about
+  the row like `session`, and the one that makes a router's choices countable:
+  a model served slowly by one upstream and quickly by another is otherwise a
+  single average over both.
 - `status`, `error`: the HTTP status of the call and the server's message when it was not 200
 - `usage`: the quantities the API reported, as a JSON object of disjoint dotted
   names: `in` is the input charged at the usual rate, `in.cache_read` the part
@@ -424,8 +430,8 @@ milliseconds, and each rate:
 
 ```sql
 CREATE VIEW stats AS SELECT
-    mid, model_id, api_type, status, cost, price_hash,
-    substr(model_id, 1, instr(model_id || '+', '+') - 1) AS provider,
+    mid, model_id, api_type, status, provider, cost, price_hash,
+    substr(model_id, 1, instr(model_id || '+', '+') - 1) AS head,
     t_start / 1000000000 AS time,
     (t_request - t_start) / 1e6 AS ms_overhead,
     (t_first   - t_start) / 1e6 AS ms_ttft,
@@ -448,7 +454,14 @@ has run: each tool, per model, with how often it was called and how often it
 failed, because a tool that fails is a turn the model had to correct and not a
 call dic made.
 
-Grouping by `provider` instead, or filtering by `time`, is a matter of editing the
+`dic --providers [MODEL]` is that same aggregate one level deeper: `GROUP BY
+model_id, provider` over the rows a router named an upstream for, filtered to
+one model when one is named.  A provider that answers directly sends no
+`provider` field and so has no rows here, which is why it is a query of its own
+and not a column of `--stats`: the question is not how a model performed but
+which of the routes it was served by did.
+
+Grouping by `head` instead, or filtering by `time`, is a matter of editing the
 one query — which is why the view stores the parts rather than the answers.
 
 The `dic` tool also accepts a `-c` flag to continue the previous conversation.

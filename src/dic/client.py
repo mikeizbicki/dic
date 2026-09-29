@@ -23,9 +23,10 @@ import http.client, json, os, re, sys, time, urllib.parse
 from dic import config, output, price
 from dic.options import flag, resolve
 from dic.store import (CONVERSATION_COST, COST_TREE, INSERT, LOG, LOG_ALL,
-                       LOG_SESSION, SESSION_COST, STATS, TOOL_STATS, config_dir,
-                       db, history, normalize, resolve_ref, session_read,
-                       session_write, store_attachment, turns_from_rows, ulid)
+                       LOG_SESSION, PROVIDERS, SESSION_COST, STATS, TOOL_STATS,
+                       config_dir, db, history, normalize, resolve_ref,
+                       session_read, session_write, store_attachment,
+                       turns_from_rows, ulid)
 from dic.tty import (BLUE, RESET, THINKING, DicError, Line, osc52, pv_update,
                      report, summary, use_color)
 
@@ -529,6 +530,10 @@ def dic(prompt,
         models_file:  flag(help="a json file of model entries to overlay") = None,
         stats:        flag(action="bool",
                            help="print per-model statistics and exit") = False,
+        providers:    flag(long="--providers", metavar="MODEL", action="?",
+                           env=False,
+                           help="print the upstreams a router chose, per model"
+                                " or for MODEL, and exit") = None,
         log:          flag(action="bool", env=False,
                            help="list recent messages, newest first, and exit")
                       = False,
@@ -592,6 +597,16 @@ def dic(prompt,
         tools = table(conn.execute(TOOL_STATS).fetchall())
         if tools:
             text += "\n" + tools
+        out.write(text)
+        out.flush()
+        return Reply(text=text)
+    if knobs["providers"] is not None:
+        # which upstream a router chose, and how it did: the aggregate --stats
+        # prints, one level deeper, over the rows that named one.  A bare
+        # --providers is every model, so a harness that routes through one
+        # router reads one table without naming the model it asks about.
+        text = table(conn.execute(
+            PROVIDERS, (knobs["providers"], knobs["providers"])).fetchall())
         out.write(text)
         out.flush()
         return Reply(text=text)
@@ -775,19 +790,6 @@ def dic(prompt,
         if pv_resp is not None:
             pv_update(pv_resp, final=True, err=err, env=env)
 
-    def insert(mid, response, raw, outputs, usage, cost, items, status, error):
-        """Append one turn to the tree: the reply, the failure, or the abort."""
-        conn.execute(INSERT,
-                     (mid, prompt, system, response, json.dumps(raw),
-                      prev_mid, json.dumps([att["aid"] for att in attached]),
-                      json.dumps(outputs), model["model_id"], api_type,
-                      status, error, json.dumps(usage) if usage else None,
-                      cost, json.dumps(items), price.price_hash(model),
-                      stamps["t_start"], stamps.get("t_connect"),
-                      stamps.get("t_request"), stamps.get("t_headers"),
-                      stamps.get("t_first"), stamps["t_last"],
-                      stamps["t_done"]))
-
     paint = use_color(out, env) and knobs["path"] is None
 
     def keep(wire):
@@ -853,13 +855,18 @@ def dic(prompt,
         second round is the first round's own mid.  Only the first round
         carries the prompt and the attachments: a later one continues that
         turn rather than making one.
+
+        The upstream a router chose is read from `acc`, where the adaptor's
+        parse() put it: it is a fact about this round's response and not about
+        the call, and a round dic is writing because it failed may have none.
         """
         mid = ulid()
         conn.execute(INSERT, (
             mid, index, prompt if index == 0 else "", system, response,
             json.dumps(raw), prev, json.dumps(ids if index == 0 else []),
             json.dumps(outputs), json.dumps(results) if results else None,
-            model["model_id"], api_type, session, status, error,
+            model["model_id"], api_type, session, acc.get("provider"),
+            status, error,
             json.dumps(usage) if usage else None,
             cost, json.dumps(items) if items is not None else None,
             source if cost is not None else None,
