@@ -175,6 +175,7 @@ class Line:
         self.stop = None            # the clock thread's flag, once it is running
         self.thread = None
         self.clock = False          # whether the clock owns the line now
+        self.extra = ""             # attribution appended to the ttft line
 
     def restart(self):
         """Start this line's clock over: a tool loop is more than one request.
@@ -183,6 +184,7 @@ class Line:
         token, so the ttft clock is the round's and not the call's.
         """
         self.start = time.time_ns()
+        self.extra = ""
 
     def elapsed(self):
         """Seconds since this line was made: one clock for every writer."""
@@ -230,9 +232,17 @@ class Line:
         return showing
 
     def first_token(self):
-        """The first token arrived: finish and close the line, if one is showing."""
+        """The first token arrived: finish and close the line, if one is showing.
+
+        `extra` -- something learned while the wait was running, like the
+        upstream a router chose -- is appended to the clock, so one line
+        carries both the number and what explains it.  The line exists to
+        explain a stall, so a call whose clock never painted drops the
+        attribution with it.
+        """
         if self.stop_clock():
-            self.paint(f"ttft: {pv_clock(self.elapsed(), tenths=True)}")
+            tail = f"  {self.extra}" if self.extra else ""
+            self.paint(f"ttft: {pv_clock(self.elapsed(), tenths=True)}{tail}")
         self.close()
 
     def status(self, msg):

@@ -112,6 +112,10 @@ def parse(event, acc):
     ('', '')
     >>> acc["tier"]
     'flex'
+    >>> parse({"choices": [], "provider": "Groq"}, acc)
+    ('', '')
+    >>> acc["provider"]
+    'Groq'
     """
     if event.get("error"):
         # a failure reported as a data frame rather than as a status code
@@ -123,6 +127,10 @@ def parse(event, acc):
         # the tier is a fact about the response, so a price is read from here
         # and never from the request options that were sent
         acc["tier"] = event["service_tier"]
+    if event.get("provider"):
+        # a router (OpenRouter) names the upstream it chose; a direct
+        # provider sends no such field, so this costs it nothing
+        acc["provider"] = event["provider"]
     usage = event.get("usage")
     if usage:
         acc["usage"] = openai_usage(usage)

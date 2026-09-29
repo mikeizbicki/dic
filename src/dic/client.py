@@ -720,6 +720,10 @@ def dic(prompt,
                       events(model["api_base"], adaptor.PATH, headers, body, wire))
             for event in stream:
                 chunk, kind = adaptor.parse(event, acc)
+                if acc.get("provider"):
+                    # a router named the upstream mid-wait, so it rides the
+                    # clock it explains
+                    line.extra = f"provider: {acc['provider']}"
                 if not chunk:
                     continue
                 if kind != "blob":
