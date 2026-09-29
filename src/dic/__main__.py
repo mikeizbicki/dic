@@ -53,8 +53,13 @@ def load_adaptor(api_type):
 
 def main():
     try:
-        args = vars(parser().parse_args())
-        prompt = " ".join(args.pop("prompt"))
+        parsed, extra = parser().parse_known_args()
+        args = vars(parsed)
+        # Every word argparse did not claim is a prompt word too.  A wrapper
+        # such as committe puts its own instructions in front of the request
+        # it forwards, and argparse matches only one run of positionals, so
+        # the words on either side of a flag would otherwise be dropped.
+        prompt = " ".join(args.pop("prompt") + extra)
         if not sys.stdin.isatty():
             piped = sys.stdin.read()
             prompt = f"{prompt}\n\n{piped}" if (prompt and piped.strip()) else (prompt or piped)

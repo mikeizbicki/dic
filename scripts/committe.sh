@@ -25,6 +25,17 @@ function committe() {
         esac
     done
 
+    # The prompt goes into the user turn in front of whatever the user wrote,
+    # so an invocation with no request would send the instructions alone and
+    # make a change nobody asked for.  A pipe on stdin is a request, and a
+    # continuation such as -c carries one already.  This does not try to tell
+    # a request from a flag's value, which would mean parsing dic's options
+    # here, so it only catches the invocation with nothing at all.
+    if (( ${#llm_args[@]} == 0 )) && [[ -t 0 ]]; then
+        echo "committe-error: no request" >&2
+        return 1
+    fi
+
     # only allow committe to run if the repo is clean, unless -f was given
     if (( ! force )); then
         if ! git rev-parse --git-dir >/dev/null 2>&1; then
@@ -75,11 +86,14 @@ function committe-mkpatch() {
         return 1
     fi
 
-    # We pass the user's request as positional args to llm_command.
-    # Use a subshell so `set -o pipefail` doesn't leak into the caller's shell.
+    # We pass the user's request as positional args to llm_command,
+    # preceded by the instructions that say what to do with it.  Those
+    # instructions belong in the user turn and not in the system prompt:
+    # the system prompt is the head of every request dic makes, so
+    # rewriting it throws away the cached prefix that -c exists to hit.
     local i
     for (( i = 0; i <= retries; i++ )); do
-        if $llm_command -s "$(committe-prompt)" "$@" > "$(committe-patchfile)"; then
+        if $llm_command "$(committe-prompt)" "$@" > "$(committe-patchfile)"; then
             return 0
         fi
         (( i < retries )) && echo "committe-warning: $llm_command failed, retrying" >&2
@@ -140,7 +154,9 @@ function committe-apply() {
 }
 
 function committe-prompt() {
-    # Print the system prompt used by committe.
+    # Print the instructions committe puts in front of the request, in the
+    # user turn and not in the system prompt, so that a continued -c reads
+    # the conversation's cache instead of rewriting its head.
     # It is a global function so that users can always run it to inspect the prompt.
     # All commands used in constructing the prompt must be side effect free.
     cat <<EOF
@@ -212,5 +228,7 @@ Use the following information to help you write the code:
 
 $ git ls-files
 $(git ls-files)
+
+The request follows.
 EOF
 }
