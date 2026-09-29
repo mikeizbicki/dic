@@ -38,7 +38,8 @@ flag = Flag
 
 # What "not given" looks like for each action; a knob still holding one of
 # these falls back to its environment variable.
-EMPTY = {"": None, "append": (), "count": None, "bool": False, "yes/no": None}
+EMPTY = {"": None, "append": (), "count": None, "bool": False, "yes/no": None,
+         "?": None}
 
 
 def _name(name):
@@ -147,6 +148,9 @@ def parser():
         elif f.action == "count":
             p.add_argument(*options, dest=name, default=empty, help=help_text,
                            action="count")
+        elif f.action == "?":
+            p.add_argument(*options, dest=name, default=empty, help=help_text,
+                           nargs="?", const="", metavar=f.metavar or None)
         else:
             p.add_argument(*options, dest=name, default=empty, help=help_text,
                            type=f.type, metavar=f.metavar or None,

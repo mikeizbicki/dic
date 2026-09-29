@@ -26,7 +26,7 @@ from dic.tty import DicError
 # version of dic migrates another one: dic is pre-release, so an older file is
 # not upgraded but reported with the rm that removes it, because a database
 # that is only nearly right fails later as a confusing sqlite error.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_results TEXT,           -- what this round's tools answered, and how long
     model_id TEXT,
     api_type TEXT,
+    session TEXT,                -- the DIC_SESSION this row was written under
     status INTEGER,              -- HTTP status, NULL if we never got one
     error TEXT,                  -- the server's body when status <> 200
     usage TEXT,                  -- disjoint counts: "in.cache_read" -> 8000
@@ -70,6 +71,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tokens_cache_read INTEGER GENERATED ALWAYS AS
         (json_extract(usage, '$."in.cache_read"')) VIRTUAL);
 CREATE INDEX IF NOT EXISTS messages_prev_mid ON messages(prev_mid);
+CREATE INDEX IF NOT EXISTS messages_session ON messages(session);
 -- Every derived number is a subtraction of two stored instants, so the view
 -- is a view: nothing is materialized, nothing can go stale, and no python
 -- computes a statistic.  A provider is the head of the model_id chain.
@@ -118,9 +120,9 @@ CREATE TABLE IF NOT EXISTS config_meta (
 # them written, which is the point of them.
 COLUMNS = ("mid", "round", "user", "system", "response", "response_raw",
            "prev_mid", "attachments", "outputs", "tool_results", "model_id",
-           "api_type", "status", "error", "usage", "cost", "cost_items",
-           "price_hash", "t_start", "t_connect", "t_request", "t_headers",
-           "t_first", "t_last", "t_done")
+           "api_type", "session", "status", "error", "usage", "cost",
+           "cost_items", "price_hash", "t_start", "t_connect", "t_request",
+           "t_headers", "t_first", "t_last", "t_done")
 INSERT = (f"INSERT INTO messages ({', '.join(COLUMNS)})"
           f" VALUES ({', '.join('?' * len(COLUMNS))})")
 
@@ -162,6 +164,7 @@ SELECT model_id, json_extract(value, '$.name') AS tool,
 # What `dic --log` prints into a completion picker: one row per message, in
 # the order `git log` uses, so fzf reads top-down.  The mid is column one, so
 # the picker hides it with --with-nth=2.. and still hands {1} to --show.
+# prev_mid comes with each row, because --graph draws the forest from it.
 LOG = """
 WITH RECURSIVE chain(mid, prev_mid, model_id, usage, user, t_start, status) AS (
     SELECT mid, prev_mid, model_id, usage, user, t_start, status
@@ -169,18 +172,62 @@ WITH RECURSIVE chain(mid, prev_mid, model_id, usage, user, t_start, status) AS (
   UNION ALL
     SELECT m.mid, m.prev_mid, m.model_id, m.usage, m.user, m.t_start, m.status
       FROM messages m JOIN chain c ON m.mid = c.prev_mid)
-SELECT mid, t_start, model_id, user, status,
+SELECT mid, prev_mid, t_start, model_id, user, status,
        coalesce((SELECT sum(value) FROM json_each(usage)), 0) AS tokens
   FROM chain ORDER BY t_start DESC LIMIT ?
 """
 
 LOG_ALL = """
-SELECT mid, t_start, model_id, user, status,
+SELECT mid, prev_mid, t_start, model_id, user, status,
        coalesce((SELECT sum(value) FROM json_each(usage)), 0) AS tokens
   FROM messages ORDER BY t_start DESC LIMIT ?
 """
 
+# Every message written under a session and its sub-sessions: the same subtree
+# --cost-session sums.  A harness that runs its children under
+# DIC_SESSION=parent/scruta-N therefore lists one run here, and not only the
+# one conversation its pointer holds.
+LOG_SESSION = """
+SELECT mid, prev_mid, t_start, model_id, user, status,
+       coalesce((SELECT sum(value) FROM json_each(usage)), 0) AS tokens
+  FROM messages WHERE session = ? OR session LIKE ? || '/%'
+ ORDER BY t_start DESC LIMIT ?
+"""
+
 B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+# The cost of a session and every session nested inside it.  A session name
+# is a path -- a subagent that runs under DIC_SESSION=parent/scruta-1 is a
+# child of `parent` -- so one index answers the whole subtree, and the slash
+# is in the LIKE so that `p` does not swallow `px`.
+SESSION_COST = """
+SELECT coalesce(sum(cost), 0.0) FROM messages
+ WHERE session = ? OR session LIKE ? || '/%'
+"""
+
+# The cost of one conversation: a walk of prev_mid, which is the replay
+# lineage.  The two are orthogonal -- a session says what a harness run
+# cost and a conversation says what a thread cost -- and a subagent that
+# deliberately forks a new context appears in the first and not the second.
+CONVERSATION_COST = """
+WITH RECURSIVE chain(mid) AS (
+    SELECT mid FROM messages WHERE mid = ?
+  UNION ALL
+    SELECT prev_mid FROM messages m JOIN chain c ON m.mid = c.mid
+     WHERE m.prev_mid IS NOT NULL)
+SELECT coalesce(sum(cost), 0.0) FROM messages
+ WHERE mid IN (SELECT mid FROM chain)
+"""
+
+# The per-session breakdown of one subtree: each (sub)session's own total,
+# so that a tree can be rendered from it.  The rollup is python's job, for
+# the reason --stats is: neither is ever on the latency path.
+COST_TREE = """
+SELECT session, count(*) AS n, coalesce(sum(cost), 0.0) AS cost
+  FROM messages
+ WHERE session = ? OR session LIKE ? || '/%'
+ GROUP BY session ORDER BY session
+"""
+
 
 
 def ulid():
