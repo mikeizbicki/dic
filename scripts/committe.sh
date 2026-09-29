@@ -18,7 +18,9 @@ function committe() {
         return 1
     fi
 
-    # generate and apply the patch
+    # generate and apply the patch.  committe-apply's status is this
+    # function's: 0 committed, 2 the model asked a question instead of
+    # making a change, 1 nothing could be applied.
     committe-mkpatch "$@" || return $?
     committe-apply
 }
@@ -29,6 +31,20 @@ function committe-patchfile() {
     # and can be inspected when debugging a failed patch.
     # `git rev-parse --git-dir` works even from subdirectories of the repo.
     echo "$(git rev-parse --git-dir)/committe-patchfile"
+}
+
+function committe-message() {
+    # The commit message: everything above the first "diff --git" line.
+    # A line beginning '#!' is committe's signal and not the model's prose,
+    # so it is dropped, and the blank lines it leaves at the top go with it.
+    sed -e '/^diff --git/,$d' -e '/^#!/d' -e '/./,$!d' "$(committe-patchfile)"
+}
+
+function committe-blocked() {
+    # The question the model flagged beside its patch, if it wrote one: a
+    # line beginning '#!' above the commit message.  Empty when there is
+    # none, so a caller can test it as a string.
+    sed -n 's/^#![[:space:]]*//p' "$(committe-patchfile)"
 }
 
 function committe-mkpatch() {
@@ -53,6 +69,20 @@ function committe-mkpatch() {
 
 function committe-apply() {
     local patch_file=$(committe-patchfile)
+    local blocked=$(committe-blocked)
+
+    # A reply with no patch at all is the model asking a question instead of
+    # making a change, so there is nothing to apply and nothing to commit:
+    # the question is printed and the status is 2, which is not the 1 a
+    # failure exits with, so a caller can tell "it asked me something" from
+    # "it could not do it" and a loop that feeds failures back to the model
+    # knows to stop.
+    if ! grep -q '^diff --git ' "$patch_file"; then
+        echo "committe-question: the model made no change; it asks:" >&2
+        sed 's/^#![[:space:]]*//' "$patch_file" >&2
+        echo "committe-hint: continue with: committe -c '...'" >&2
+        return 2
+    fi
 
     # We directly run `git apply` on the output of the llm.
     # `git apply` ignores any text before the first "diff --git" line,
@@ -76,7 +106,12 @@ function committe-apply() {
     # We tag the commits by modifying the subject with [geni]
     # and setting the committer fields.
     local commit_message
-    commit_message="[geni] $(sed '/^diff --git/,$d' "$patch_file")"
+    commit_message="[geni] $(committe-message)"
+    if [[ -n $blocked ]]; then
+        # the model is making the change and saying what it is unsure of,
+        # so the doubt is recorded with the commit instead of being lost
+        commit_message="$commit_message"$'\n\n'"$blocked"
+    fi
     if ! GIT_COMMITTER_NAME='committe' GIT_COMMITTER_EMAIL='committe@agent' git commit --quiet -m "$commit_message"; then
         echo "committe-error: git commit failed" >&2
         return 1
@@ -84,6 +119,9 @@ function committe-apply() {
 
     # Show a short summary of the commit we just made.
     git show HEAD --stat --format='%h %s'
+    if [[ -n $blocked ]]; then
+        echo "committe-question: $blocked" >&2
+    fi
 }
 
 function committe-prompt() {
@@ -114,7 +152,9 @@ diff --git a/path/to/file b/path/to/file
 Rules:
 - No other content.
     - Do NOT wrap your response in markdown code fences.
-    - Do NOT include any prose other than the commit message.
+    - Do NOT include any prose other than the commit message, the one line
+      beginning '#!' described below, and the question that a reply with
+      no patch consists of.
 - The commit message uses Tim pope style
     - imperative header (50 char max)
     - optional body explaining the changes should be used only on algorithmically complex patches
@@ -130,6 +170,35 @@ Rules:
     - These context lines must exactly match the original document.
       (Including whitespace, quotation marks, and other punctuation.)
 - Prefer small, focused patches.
+- State a structural change the way git states it, never as content.
+    - To move a file, state the rename and no hunks: it is the whole file
+      for four lines instead of one deleted line per line of it.
+          diff --git a/old b/new
+          similarity index 100%
+          rename from old
+          rename to new
+      A move that also edits the file states those two rename lines and
+      then the hunks, which are the change against the old contents.
+    - To delete a file, state the mode and no hunks:
+          diff --git a/old b/old
+          deleted file mode 100644
+    - To change a file's mode and nothing else:
+          diff --git a/script b/script
+          old mode 100644
+          new mode 100755
+    - A new file states its mode: 100644, or 100755 when it is executable.
+    - A symlink is a new file of mode 120000 whose one added line is the
+      path it points at.
+    - Never change a submodule pointer: a gitlink names a commit that must
+      already exist on the remote, which only the user can decide.
+    - A binary file has no patch form at all.
+- If the change cannot or should not be made yet -- the request is
+  ambiguous, the tree does not support it, or you need a decision the user
+  has not made -- write no patch and reply with your question alone.  It is
+  printed and nothing is committed.
+    - To make the change and still ask something about it, put the question
+      on one line beginning '#!' above the commit message; the patch is
+      committed and the line is recorded with it.
 
 Use the following information to help you write the code:
 
