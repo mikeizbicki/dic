@@ -66,7 +66,6 @@ function committe-mkpatch() {
 
 function committe-apply() {
     local patch_file=$(committe-patchfile)
-    local blocked=$(committe-blocked)
 
     # A reply with no patch at all is the model asking a question instead of
     # making a change, so there is nothing to apply and nothing to commit
