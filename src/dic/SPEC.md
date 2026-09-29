@@ -67,6 +67,15 @@ Whenever possible, names and semantics remain the same as simonw's `llm`.
 | `-v`       | `--verbose`    | raise stderr verbosity; repeatable |
 | `-q`       | `--quiet`      | print nothing to stderr but errors |
 
+Readout commands name their scope and print nothing else, so a harness
+reads a number and not a line of prose:
+
+| short form | long form       | meaning |
+| ---------- | --------------- | ------- |
+|            | `--cost-session` | the spend of a session and its sub-sessions |
+|            | `--cost-of`     | the spend of the conversation ending at REF |
+|            | `--cost-tree`   | the per-session breakdown of a session's subtree |
+
 ### Defaults
 
 Two environment variables supply defaults for the two flags a user tends to want
@@ -82,6 +91,10 @@ These are environment variables rather than a second config file because a confi
 file would add a stat and a parse to the latency path for something a shell startup
 file already does, and because the environment is inherited by subshells and
 overridable for a single command: `DIC_MODEL=gpt dic ...`.
+
+`DIC_COST_BUDGET` is not a default for any flag: it is a ceiling, checked
+before every request, on the same subtree `--cost-session` prints.  A harness
+that has spent its budget stops rather than asks.
 
 If `DIC_MODEL` names a model that is not configured, this is an error;
 a stale export must never silently fall back to some other model.
@@ -254,6 +267,19 @@ All of it goes through one `report(verbosity, level, msg)` in `tty.py`.
     but the tool itself is not re-run: `--tools` must be given again for the
     model to be offered it.
 
+5. Subagents: an agent that calls other agents is several conversations under
+    one session, and every piece dic needs for that is already here.  A session
+    name nests -- `DIC_SESSION=parent/scruta-1` is a child of `parent` --
+    `--cost-session` sums the subtree, and `-c` reads the pointer of whichever
+    session names it, so a child that wants a fresh context simply does not pass
+    `-c`.  What is missing is the ergonomics a harness wants: a `--session NAME`
+    flag, so a script spawns a child without juggling `export`; and a
+    `--subsession SUFFIX` that appends a unique child name (`parent/scruta-<ulid>`)
+    and prints the mid it wrote, for the common "fork a fresh context, attributed
+    to my own subtree" case.  A `scruta()` shell function built from them is the
+    whole of what a subagent is: dic's job is the call, and the orchestration is
+    the script's, exactly as `itera` already is.
+
 2. Many providers allow prompt caching to reduce cost of input tokens.
     It's not clear to me the best way to structure this from the cli or in the various config files.
 
@@ -311,6 +337,11 @@ The messages table has the following columns:
   count of the rows where it is false.
 - `model_id`: the `model_id` used to generate the response
 - `api_type`: the wire protocol used to generate the response (see "Model configuration")
+- `session`: the `DIC_SESSION` this row was written under.  A session name is
+  a path, so a subagent that runs under `DIC_SESSION=parent/scruta-1` is a child
+  of `parent`, and the cost of a harness run is one query over one index.  This
+  is not session state: a pointer is still a tmpfs file, and this is a fact about
+  the row, like `model_id`.
 - `status`, `error`: the HTTP status of the call and the server's message when it was not 200
 - `usage`: the quantities the API reported, as a JSON object of disjoint dotted
   names: `in` is the input charged at the usual rate, `in.cache_read` the part
@@ -433,6 +464,9 @@ no liveness checking, and no locking beyond an atomic rename.
 The file's mtime serves as the "last used" time for free.
 There is deliberately no `sessions` table in sqlite:
 session state is ephemeral, and the message tree in sqlite is immutable and append-only.
+What a row stores instead is the *name* of the session that wrote it -- one
+column, so that a harness's total spend is one aggregate rather than a walk of
+the tmpfs directory, and a nested name is a subtree.
 If `XDG_RUNTIME_DIR` is unset, fall back to `/tmp/fac-$UID/dic/`.
 
 If `-c` is passed we assume that `--mid` is not passed,

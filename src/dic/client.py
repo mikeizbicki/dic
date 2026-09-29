@@ -22,9 +22,10 @@ import http.client, json, os, re, sys, time, urllib.parse
 
 from dic import config, output, price
 from dic.options import flag, resolve
-from dic.store import (INSERT, LOG, LOG_ALL, STATS, TOOL_STATS, config_dir, db,
-                       history, normalize, resolve_ref, session_read,
-                       session_write, store_attachment, turns_from_rows, ulid)
+from dic.store import (CONVERSATION_COST, COST_TREE, INSERT, LOG, LOG_ALL,
+                       SESSION_COST, STATS, TOOL_STATS, config_dir, db, history,
+                       normalize, resolve_ref, session_read, session_write,
+                       store_attachment, turns_from_rows, ulid)
 from dic.tty import (BLUE, RESET, THINKING, DicError, Line, osc52, pv_update,
                      report, summary, use_color)
 
@@ -106,6 +107,37 @@ def table(rows):
         "\t".join("" if cell is None else str(cell) for cell in row) + "\n"
         for row in ([rows[0].keys()] if rows else [])
         + [list(r) for r in rows])
+
+
+def session_cost_tree(conn, name):
+    """One session's subtree as a table: own cost, and the cost it rolls up.
+
+    A session name is a path, so the subtree of `foo` is `foo` itself and
+    every session that begins `foo/`.  Each row is one (sub)session; the
+    `subtree` column sums it with its own descendants, so the row `foo`
+    is the same number --cost-session prints.  Python does the arithmetic,
+    as it does for --stats, because neither is ever on the latency path.
+
+    >>> import sqlite3
+    >>> conn = sqlite3.connect(":memory:"); conn.row_factory = sqlite3.Row
+    >>> _ = conn.executescript("CREATE TABLE messages(session TEXT, cost REAL);")
+    >>> _ = conn.executemany("INSERT INTO messages VALUES (?, ?)",
+    ...                      [("a", 1.0), ("a/b", 2.0), ("a/b/c", 4.0)])
+    >>> print(session_cost_tree(conn, "a"), end="")
+    session	n	own	subtree
+    a	1	1.0000	7.0000
+    a/b	1	2.0000	6.0000
+    a/b/c	1	4.0000	4.0000
+    """
+    rows = [(r["session"], r["n"], r["cost"])
+            for r in conn.execute(COST_TREE, (name, name))]
+    lines = ["\t".join(("session", "n", "own", "subtree"))]
+    for session, n, own in rows:
+        subtree = sum(c for s, _, c in rows
+                      if s == session or s.startswith(session + "/"))
+        lines.append("\t".join((session, str(n), f"{own:.4f}",
+                                f"{subtree:.4f}")))
+    return "".join(line + "\n" for line in lines)
 
 
 def prompt_line(text, width=60):
@@ -394,6 +426,17 @@ def dic(prompt,
         mid:          flag(long="--mid", metavar="REF",
                            help="continue from a message: a mid, its prefix,"
                                 " or a ref like HEAD~3") = None,
+        cost_session: flag(long="--cost-session", metavar="NAME", action="?",
+                           env=False,
+                           help="print a session's spend, its sub-sessions"
+                                " included (default: $DIC_SESSION)") = None,
+        cost_of:      flag(long="--cost-of", metavar="REF", env=False,
+                           help="print the spend of the conversation"
+                                " ending at REF") = None,
+        cost_tree:    flag(long="--cost-tree", metavar="NAME", action="?",
+                           env=False,
+                           help="print a per-session cost breakdown"
+                                " (default: $DIC_SESSION)") = None,
         pv_thinking:  flag(action="yes/no",
                            help="meter the reasoning instead of printing it") = None,
         pv_response:  flag(action="yes/no",
@@ -456,6 +499,7 @@ def dic(prompt,
     knobs = resolve(locals(), env)
 
     conn = db(env)
+    session = env.get("DIC_SESSION", "global")
     config.sync(conn, env, knobs["models_file"])   # a stat per file; a parse only when one moved
     if knobs["aliases"] or knobs["models"]:
         text = (config.aliases(conn) if knobs["aliases"]
@@ -472,6 +516,30 @@ def dic(prompt,
         out.flush()
         return Reply(text=text)
     if knobs["log"] or knobs["show"] is not None:
+    if (knobs["cost_session"] is not None or knobs["cost_of"]
+            or knobs["cost_tree"] is not None):
+        # the cost commands are read-only: no prompt, no network, no row.
+        # A session is a subtree and a conversation is a prev_mid walk, so
+        # the two scopes are orthogonal and each flag names which it means;
+        # a flag given with no value asks about this shell's own session.
+        name = (knobs["cost_session"] if knobs["cost_session"] is not None
+                else knobs["cost_tree"])
+        if name is not None and not name:
+            name = session
+        if knobs["cost_of"]:
+            spent = conn.execute(
+                CONVERSATION_COST, (resolve_ref(conn, knobs["cost_of"], env),)
+            ).fetchone()[0]
+            text = f"${spent:.4f}\n"
+        elif knobs["cost_tree"] is not None:
+            text = session_cost_tree(conn, name)
+        else:
+            spent = conn.execute(SESSION_COST, (name, name)).fetchone()[0]
+            text = f"${spent:.4f}\n"
+        out.write(text)
+        out.flush()
+        return Reply(text=text)
+
         # the two commands a completion picker is built from: the list it
         # reads, and the preview it draws for one row of it
         if knobs["show"] is not None:
@@ -495,6 +563,20 @@ def dic(prompt,
 
     if not prompt.strip() and not knobs["attachment"]:
         raise DicError("no prompt")
+
+    # A ceiling on the session's spend, checked here because this is the one
+    # place that sees the row before the request is sent; the ceiling is the
+    # same subtree --cost-session prints, sub-sessions included.
+    budget = env.get("DIC_COST_BUDGET")
+    if budget:
+        try:
+            limit = float(budget)
+        except ValueError:
+            raise DicError(f"DIC_COST_BUDGET={budget} is not a number")
+        spent = conn.execute(SESSION_COST, (session, session)).fetchone()[0]
+        if spent >= limit:
+            raise DicError(f"{session}: ${spent:.4f} spent,"
+                           f" DIC_COST_BUDGET=${limit:.2f}")
 
     prev_mid = (resolve_ref(conn, knobs["mid"], env) if knobs["mid"]
                 else (session_read(env) if knobs["cont"] else None))
@@ -680,7 +762,7 @@ def dic(prompt,
             mid, index, prompt if index == 0 else "", system, response,
             json.dumps(raw), prev, json.dumps(ids if index == 0 else []),
             json.dumps(outputs), json.dumps(results) if results else None,
-            model["model_id"], api_type, status, error,
+            model["model_id"], api_type, session, status, error,
             json.dumps(usage) if usage else None,
             cost, json.dumps(items) if items is not None else None,
             price.price_hash(model) if cost is not None else None,
