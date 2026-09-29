@@ -179,9 +179,25 @@ function launch() {
     # command.  It is one line for one shell, so every word is quoted for
     # that shell; the command is a word like any other and needs no special
     # case.
-    local line="launch-decorate $(printf %q "$title")"
-    [[ -n $banner ]] && line+="; launch-banner $(printf %q "$banner")"
-    line+=';'
+    #
+    # The helpers are written into the line as definitions and not called
+    # by name, because the shell that reads the line is a fresh one that
+    # has not sourced this file: it knows the interactive rc and nothing
+    # else, so a bare `launch-decorate` is a command it does not have.
+    # Sending the definitions along makes the line stand alone however the
+    # new shell was started.
+    local line
+    line=$(declare -f launch-decorate launch-read-bg launch-tint launch-banner)
+    line+=$'\n'"launch-decorate $(printf %q "$title")"
+    [[ -n $banner ]] && line+=$'\n'"launch-banner $(printf %q "$banner")"
+
+    # `exec` so that the window runs the command itself and not the command
+    # inside a second shell.  Without it the line ends in a shell, the
+    # shell is interactive because the outer one was started with -i, and
+    # `exit` at the prompt returns to the outer shell instead of ending the
+    # window -- and an interactive shell on a tty that its predecessor is
+    # still attached to prints "no job control in background".
+    line+=$'\n''exec'
     local word
     for word in "${cmd[@]}"; do
         line+=" $(printf %q "$word")"
@@ -215,7 +231,7 @@ function launch() {
             # run is over; it is held open for now because a window that
             # stays is the only place to read a run while this is new.
             kitty --detach --hold --title "$title" \
-                bash -ic "$line"
+                bash -c "$line"
             ;;
         tmux)
             # -c for the directory and -e for the environment, because a
@@ -225,7 +241,7 @@ function launch() {
             # kitty.
             local id
             id=$(tmux new-window -P -F '#{window_id}' -c "$PWD" "${env_args[@]}" \
-                     -- bash -ic "$line") || return
+                     -- bash -c "$line") || return
             tmux set-option -w -t "$id" remain-on-exit on
             ;;
     esac
