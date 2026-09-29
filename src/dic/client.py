@@ -179,7 +179,7 @@ def log_rows(conn, mid, limit, everything=False):
 
 
 def log_table(rows):
-    """Rows of --log as one tab-separated table: mid first, prompt last.
+    r"""Rows of --log as one tab-separated table: mid first, prompt last.
 
     The header is a row of its own, as --stats's is, so a picker skips it
     with --header-lines=1 and reads column one of every other line as a mid.
