@@ -515,7 +515,6 @@ def dic(prompt,
         out.write(text)
         out.flush()
         return Reply(text=text)
-    if knobs["log"] or knobs["show"] is not None:
     if (knobs["cost_session"] is not None or knobs["cost_of"]
             or knobs["cost_tree"] is not None):
         # the cost commands are read-only: no prompt, no network, no row.
@@ -540,6 +539,7 @@ def dic(prompt,
         out.flush()
         return Reply(text=text)
 
+    if knobs["log"] or knobs["show"] is not None:
         # the two commands a completion picker is built from: the list it
         # reads, and the preview it draws for one row of it
         if knobs["show"] is not None:
