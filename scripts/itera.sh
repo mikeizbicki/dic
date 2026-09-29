@@ -50,7 +50,6 @@ itera-detect-test() {
 }
 
 function itera() {
-    #local test_cmd="${ITERA_TEST:-./test.sh}"
     local test_cmd="$(itera-detect-test)"
     local max="${ITERA_MAX:-8}"
     local -a request=()
@@ -73,10 +72,6 @@ function itera() {
         echo 'itera-error: sandbox not found' >&2
         return 1
     fi
-    #if ! command -v "$test_cmd" >/dev/null 2>&1; then
-        #echo "itera-error: test_cmd='$test_cmd' not found" >&2
-        #return 1
-    #fi
 
     # The tree must already be green.  Otherwise the loop would be fixing
     # pre-existing failures, and a green tree would otherwise end the loop
@@ -90,7 +85,9 @@ function itera() {
     local i=0 out=
     while (( i < max )); do
         i=$((i + 1))
-        printf 'itera: round %d/%d\n' "$i" "$max" >&2
+        local cols=${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}
+        local rule; printf -v rule '%*s' "$cols" ''; rule=${rule// /-}
+        printf '%s\nitera: round %d/%d\n%s\n' "$rule" "$i" "$max" "$rule" >&2
 
         # Round one is the user's; every later round continues the
         # conversation it started.
@@ -105,7 +102,7 @@ function itera() {
         # project's tree is not: the failing line is what the model needs.
         { [[ -n "$out" ]] && printf 'The tests fail with:\n\n%s\n' "$out"; } \
             | committe "${args[@]}" >&2
-        if (( ${PIPESTATUS[0]} != 0 )); then
+        if (( ${PIPESTATUS[1]} != 0 )); then
             echo 'itera-error: committe failed' >&2
             return 1
         fi
