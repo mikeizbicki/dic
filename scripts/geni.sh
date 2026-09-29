@@ -7,16 +7,24 @@
 # repository, with `itera` run inside it.  Only a green run is merged back,
 # as a fast-forward onto the branch the shell started in, and only then is
 # the worktree removed.  A run that goes badly leaves the user's own
-# checkout untouched and the shell inside the worktree, where the failing
-# tests and the commit that did not work are.
+# checkout untouched, with the failing tests and the commit that did not
+# work in the worktree.
+#
+# The run is handed to `launch`, which opens a window of its own when the
+# terminal has one to open and runs the command where the shell stands when
+# it does not.  A run is then something to leave and come back to instead
+# of a command that holds the shell, and a machine without a terminal
+# `launch` knows is unchanged.  Nothing comes back from the window, so what
+# geni returns is the launcher's status and not the run's.
 #
 # The merge is a fast-forward and nothing else, so the tree that arrives is
 # byte for byte the tree that passed the tests.  Nothing here resolves a
 # conflict, because a conflict is a decision and the user is the one who
 # makes it.
 #
-# Sourcing this file defines the function and does nothing else.  `itera`
-# must already be sourced: the work in the worktree is its.
+# Sourcing this file defines the functions and does nothing else.  `itera`
+# must already be sourced, and `launch` to get a window: the work in the
+# worktree is itera's.
 
 geni-usage() {
     cat <<'EOF'
@@ -25,18 +33,23 @@ usage: geni [flags] [REQUEST...]
 Run itera on a git worktree of its own, and merge the branch back if the
 tests pass.
 
-A new branch off HEAD is checked out in a worktree outside the repository,
-the shell moves there, and REQUEST is passed to itera unchanged.  On
-success the branch is fast-forwarded onto the branch the shell started in,
-the worktree is removed, and the shell returns to where it was.  On failure
-the shell stays in the worktree, with the unfinished branch and the test
-output in front of it.
+A new branch off HEAD is checked out in a worktree outside the repository
+and REQUEST is passed to itera unchanged.  In a terminal `launch` can open
+a window in, the run happens there and the shell that started it is free at
+once; otherwise the run happens where the shell stands.  On success the
+branch is fast-forwarded onto the branch that was current, the worktree is
+removed, and the window says so.  On failure the worktree is left as it is,
+with the unfinished branch and the test output in it.
 
 Because the work is on a branch of its own, the starting checkout is
 untouched until the tests are green, and because a fast-forward is the only
 merge this does, a green run never has to resolve anything.  A starting
 branch that moved while itera ran cannot be fast-forwarded, and geni says
 so instead of merging behind the user's back.
+
+A window has no channel back to the shell that opened it, so in that case
+geni's status is the launcher's and not the run's: the run is read in the
+window.
 
 flags:
   -h, --help    show this help.
@@ -102,6 +115,27 @@ function geni() {
         return 1
     fi
 
+    # The run goes to a window of its own when there is one to open, so
+    # that a run is something to leave and come back to.  The branch name
+    # exists now and the banner wants it, so the window is opened from here
+    # and not from the top of the function.  `launch` runs the command
+    # where the shell stands when it has no window to open, and when there
+    # is no launcher at all, so every path out of here is unchanged.
+    if declare -F launch >/dev/null 2>&1; then
+        launch --banner "geni: $branch" --title "geni: $branch" \
+               -- geni-run "$wt" "$branch" "$root" "${request[@]}"
+    else
+        geni-run "$wt" "$branch" "$root" "${request[@]}"
+    fi
+}
+
+# Everything geni does once the worktree exists: the loop, the merge back,
+# and the banner that says how it went.  It is a function of its own
+# because a window starts a new shell, and a new shell can call a function
+# but cannot resume the middle of one.
+function geni-run() {
+    local wt=$1 branch=$2 root=$3; shift 3
+
     # Remember where the shell was, because success has to put it back.
     # Failure is the one case it is not put back: the worktree is the thing
     # to look at then.
@@ -112,7 +146,7 @@ function geni() {
 
     # The worktree is clean by construction, so committe's own check that
     # the tree it is about to edit is clean is never forced past here.
-    if ! itera "${request[@]}"; then
+    if ! itera "$@"; then
         echo 'geni-error: itera failed; staying in the worktree' >&2
         echo "geni-hint: when the tests pass: git -C '$root' merge --ff-only '$branch'" >&2
         echo "geni-hint: then: git -C '$root' worktree remove '$wt'" >&2
@@ -143,6 +177,19 @@ function geni() {
     fi
     git -C "$root" branch -d "$branch" >/dev/null 2>&1 \
         || echo "geni-hint: the branch is still there: $branch" >&2
+
+    # Say so and stop.  In a window this is the last line and the window is
+    # left where it is; there is nobody else to tell, because nothing goes
+    # back to the shell that opened it.
+    if declare -F launch-banner >/dev/null 2>&1; then
+        launch-banner 'geni succeeded'
+    else
+        echo 'geni succeeded'
+    fi
+
+    # TODO: close the window here instead of leaving it for the user to
+    # close.  It is left open for now, with `--hold` in launch, because a
+    # window that stays is the only place to read a run while this is new.
     return 0
 }
 
@@ -155,20 +202,16 @@ function geni() {
 #     kitty @ launch --type=os-window --keep-focus --title="geni: $id" \
 #         -- bash -lc "cd '$wt' && geni ..."
 #
-# which needs `allow_remote_control socket-only` in kitty.conf: the control
-# socket is then a unix socket owned by the user, and not a port anything
-# on the network can reach.  KITTY_LISTEN_ON names that socket, and it is
-# inherited by every process the terminal starts, which is the whole
-# hazard: a `dic --tools ...` that shells out would find it and could
-# `kitty @ send-text` a command into a window the user is typing in.  The
-# window opened here must therefore be started with that variable unset,
-# and dic must unset it for its own children before it runs a tool.
-#
-# A window that closes the moment geni returns takes the failing run with
-# it, so the command the window runs ends in an interactive shell, which
-# is where a failed run wants the user anyway.  A shell that cannot open
-# a window -- no kitty, no socket, a terminal kitty did not start -- falls
-# back to running geni in the foreground, which is what this file does.
+# The window is opened by `launch`, so the terminal-specific part lives
+# there and not here.  One hazard belongs here anyway.  Opening a window
+# needs `allow_remote_control socket-only` in kitty.conf, which makes the
+# control socket a unix socket owned by the user and not a port anything on
+# the network can reach.  KITTY_LISTEN_ON names that socket, and every
+# process the terminal starts inherits it: a `dic --tools ...` that shells
+# out would find it and could `kitty @ send-text` a command into a window
+# the user is typing in.  dic has to unset it for its own children before
+# it runs a tool.  `launch` copies it on purpose, because a window that
+# cannot open a window of its own could not run `launch`.
 #
 # TODO: run the other agents in the same worktree, after itera and before
 # the merge is decided, so that one request is one branch and one review.
