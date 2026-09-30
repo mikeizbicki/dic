@@ -452,7 +452,7 @@ def db(env):
     if stamped and version != SCHEMA_VERSION:
         conn.close()
         raise DicError(f"{path}: schema mismatch: found version {version},"
-                       f" expected {SCHEMA_VERSION}; remove it with: rm {path}")
+                       f" expected {SCHEMA_VERSION}; this is probably due to upgrading/reinstalling dic; you can fix this problem by removing the old database with the command: rm {path}")
     conn.executescript(SCHEMA)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return conn
