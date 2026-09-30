@@ -45,13 +45,13 @@
   "groq+qwen": {
     "model_name": "qwen/qwen3.8-27b",
     "alias": "qwen",
-    "options": {"max_tokens": 800}
+    "options": {"max_tokens": 800},
+    "cost_input": 0.80,
+    "cost_output": 4.00
   },
 
   "cerebras+qwen": {
-    "model_name": "qwen-3.8-27b",
-    "cost_input": 0.80,
-    "cost_output": 4.00
+    "model_name": "qwen-3.8-27b"
   },
 
   "anthropic+fable":  {"model_name": "claude-fable-5-1",  "cost_input": 10.0,  "cost_output": 50.0,
