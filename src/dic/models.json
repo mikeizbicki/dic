@@ -49,7 +49,9 @@
   },
 
   "cerebras+qwen": {
-    "model_name": "qwen-3.8-27b"
+    "model_name": "qwen-3.8-27b",
+    "cost_input": 0.80,
+    "cost_output": 4.00
   },
 
   "anthropic+fable":  {"model_name": "claude-fable-5-1",  "cost_input": 10.0,  "cost_output": 50.0,
